@@ -63,6 +63,36 @@ def _read_result(run_id: str) -> dict:
     return json.loads(_file(run_id, "result.json").read_text(encoding="utf-8"))
 
 
+def _stream_map_data(result: dict) -> dict:
+    """Inline map artifacts for the streaming UI.
+
+    Cloud Run's filesystem is instance-local. A follow-up /runs/... request can be
+    routed to another instance, so the browser stream receives the GeoJSON produced
+    by this same process. Existing artifact URLs remain for compatibility/debugging.
+    """
+    run_id = result.get("run_id")
+    if not run_id:
+        return {}
+
+    noise = result.get("noise") or {}
+    prepare = result.get("prepare") or {}
+    recorded = {
+        "baseline_noise": ((noise.get("baseline") or {}).get("map_geojson_path")),
+        "live_noise": ((noise.get("live") or {}).get("map_geojson_path")),
+        "baseline_roads": prepare.get("road_map_geojson_path"),
+        "live_roads": prepare.get("live_road_map_geojson_path"),
+    }
+
+    data: dict[str, dict | None] = {}
+    for name, path in recorded.items():
+        if not path:
+            data[name] = None
+            continue
+        artifact = _recorded_artifact(run_id, path)
+        data[name] = json.loads(artifact.read_text(encoding="utf-8"))
+    return data
+
+
 def _decorate_result(result: dict) -> dict:
     run_id = result.get("run_id")
     if not run_id:
@@ -224,7 +254,9 @@ def simulate_stream(req: SimulationRequest) -> StreamingResponse:
                     flags=_pipeline_flags(req),
                     progress=emit,
                 )
-                events.put({"type": "result", "result": _decorate_result(result)})
+                streamed_result = _decorate_result(result)
+                streamed_result["map_data"] = _stream_map_data(result)
+                events.put({"type": "result", "result": streamed_result})
             except Exception as exc:
                 events.put({"type": "fatal", "error": repr(exc)})
             finally:

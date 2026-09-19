@@ -381,13 +381,18 @@ async function getJson(url) {
 
 async function loadMapData(result) {
   const links = result.links || {};
+  const inline = result.map_data || {};
   scenarioData = { baseline: null, live: null };
   scenarioRoads = { baseline: null, live: null };
 
-  if (links.baseline_noise_geojson) scenarioData.baseline = await getJson(links.baseline_noise_geojson);
-  if (links.live_noise_geojson) scenarioData.live = await getJson(links.live_noise_geojson);
-  if (links.baseline_roads_geojson) scenarioRoads.baseline = await getJson(links.baseline_roads_geojson);
-  if (links.live_roads_geojson) scenarioRoads.live = await getJson(links.live_roads_geojson);
+  scenarioData.baseline = inline.baseline_noise
+    || (links.baseline_noise_geojson ? await getJson(links.baseline_noise_geojson) : null);
+  scenarioData.live = inline.live_noise
+    || (links.live_noise_geojson ? await getJson(links.live_noise_geojson) : null);
+  scenarioRoads.baseline = inline.baseline_roads
+    || (links.baseline_roads_geojson ? await getJson(links.baseline_roads_geojson) : null);
+  scenarioRoads.live = inline.live_roads
+    || (links.live_roads_geojson ? await getJson(links.live_roads_geojson) : null);
 
   $("scenario-live").disabled = !scenarioData.live;
   if (scenarioData.baseline) {
