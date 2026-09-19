@@ -11,9 +11,29 @@
 
 **City noise, made visible.**
 
+<!-- HERO IMAGE PLACEHOLDER
+<p align="center">
+  <img src="docs/assets/stillemap-hero.jpg" width="100%" alt="StilleMap — urban noise digital twin" />
+</p>
+-->
+
+### 👉 [Launch the live app](https://stillemap-748083868426.europe-west2.run.app/)
+
 StilleMap is an autonomous urban-noise digital twin. Give it a London address and it assembles the local city geometry, gathers traffic evidence, interprets live street conditions, runs a real CNOSSOS acoustic simulation, and renders an explainable street-level noise map.
 
 > **AI interprets the city. NoiseModelling calculates the decibels.**
+
+### Google Cloud + Pydantic
+
+StilleMap uses **Google Cloud** as the production runtime and AI platform:
+
+- **Cloud Run** hosts the FastAPI application and the embedded NoiseModelling runtime.
+- **Cloud Build + Artifact Registry** build and ship the deployable service image.
+- **Google Maps Platform** provides geocoding and weather context.
+- **Gemini** provides multimodal traffic interpretation from TfL camera imagery and a grounded explanation of the completed simulation.
+- Production geometry is packaged as a local Greater London OSM GeoPackage, removing public Overpass from the critical path.
+
+**Pydantic is the contract layer between AI, APIs and deterministic physics.** Request/response models validate pipeline inputs, while Gemini's visual observation is constrained to a typed `CameraObservation` schema — vehicle counts, congestion, apparent speed, visibility and confidence. The model is deliberately not allowed to invent traffic flow rates or decibels; deterministic Python transforms validated observations into acoustic inputs, and NoiseModelling calculates the result.
 
 ---
 
@@ -68,11 +88,11 @@ Most urban datasets were not designed to measure noise directly.
 
 StilleMap combines **proxy signals** collected for completely different purposes:
 
-* **OpenStreetMap** → city geometry
-* **Department for Transport** → measured traffic volumes
-* **TfL JamCams** → current visual traffic state
-* **Google APIs** → geocoding and environmental context
-* **Gemini** → multimodal interpretation and synthesis
+- **OpenStreetMap** → city geometry
+- **Department for Transport** → measured traffic volumes
+- **TfL JamCams** → current visual traffic state
+- **Google APIs** → geocoding and environmental context
+- **Gemini** → multimodal interpretation and synthesis
 
 Those signals are converted into deterministic acoustic inputs and evaluated by NoiseModelling.
 
@@ -130,15 +150,15 @@ address
 
 ## 🔬 Design Principles
 
-| Principle                       | Implementation                                                                               |
-| ------------------------------- | -------------------------------------------------------------------------------------------- |
-| **Real acoustic physics**       | Noise levels come from NoiseModelling 6.0 / CNOSSOS, not an LLM.                             |
-| **Explicit provenance**         | Every source, assumption and simulation artifact is recorded per run.                        |
-| **No hidden source fallback**   | Missing providers stay missing; source changes are explicit configuration.                   |
+| Principle | Implementation |
+|---|---|
+| **Real acoustic physics** | Noise levels come from NoiseModelling 6.0 / CNOSSOS, not an LLM. |
+| **Explicit provenance** | Every source, assumption and simulation artifact is recorded per run. |
+| **No hidden source fallback** | Missing providers stay missing; source changes are explicit configuration. |
 | **Observed-data averages only** | Missing traffic values may use averages only from observations collected in the current run. |
-| **Localized AI influence**      | JamCam observations affect only nearby supported roads and only the current time period.     |
-| **Offline OSM geometry**        | Production uses a local Greater London GeoPackage instead of public Overpass.                |
-| **Reproducible runs**           | Every stage writes inspectable JSON, GeoJSON, imagery and NoiseModelling logs.               |
+| **Localized AI influence** | JamCam observations affect only nearby supported roads and only the current time period. |
+| **Offline OSM geometry** | Production uses a local Greater London GeoPackage instead of public Overpass. |
+| **Reproducible runs** | Every stage writes inspectable JSON, GeoJSON, imagery and NoiseModelling logs. |
 
 The baseline and live scenarios are deliberately isolated. A camera snapshot can influence the **current D/E/N period**, but it never rewrites the strategic **DEN baseline**.
 
@@ -266,18 +286,18 @@ For the demo, run artifacts needed by the browser are streamed back in the same 
 
 ## 🧩 Stack
 
-| Layer               | Technology                  |
-| ------------------- | --------------------------- |
-| UI                  | MapLibre GL JS              |
-| API                 | FastAPI                     |
-| Geospatial          | GeoPandas, Shapely, GDAL    |
-| City geometry       | OpenStreetMap / Geofabrik   |
-| Traffic             | UK Department for Transport |
-| Live street context | TfL JamCams                 |
-| Multimodal AI       | Gemini                      |
-| Acoustic engine     | NoiseModelling 6.0          |
-| Acoustic method     | CNOSSOS                     |
-| Cloud               | Google Cloud Run            |
+| Layer | Technology |
+|---|---|
+| UI | MapLibre GL JS |
+| API | FastAPI |
+| Geospatial | GeoPandas, Shapely, GDAL |
+| City geometry | OpenStreetMap / Geofabrik |
+| Traffic | UK Department for Transport |
+| Live street context | TfL JamCams |
+| Multimodal AI | Gemini |
+| Acoustic engine | NoiseModelling 6.0 |
+| Acoustic method | CNOSSOS |
+| Cloud | Google Cloud Run |
 
 ---
 
@@ -297,5 +317,4 @@ MIT
 
 ---
 
-**StilleMap
-Map the noise. Find the quiet.**
+**StilleMap: Map the noise. Find the quiet.**
