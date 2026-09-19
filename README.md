@@ -9,13 +9,11 @@
   <img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey">
 </p>
 
-**City noise, made visible.**
+**Making city noise visible.**
 
-<!-- HERO IMAGE PLACEHOLDER
 <p align="center">
   <img src="docs/assets/stillemap-hero.jpg" width="100%" alt="StilleMap — urban noise digital twin" />
 </p>
--->
 
 ### 👉 [Launch the live app](https://stillemap-748083868426.europe-west2.run.app/)
 
@@ -33,7 +31,14 @@ StilleMap uses **Google Cloud** as the production runtime and AI platform:
 - **Gemini** provides multimodal traffic interpretation from TfL camera imagery and a grounded explanation of the completed simulation.
 - Production geometry is packaged as a local Greater London OSM GeoPackage, removing public Overpass from the critical path.
 
-**Pydantic is the contract layer between AI, APIs and deterministic physics.** Request/response models validate pipeline inputs, while Gemini's visual observation is constrained to a typed `CameraObservation` schema — vehicle counts, congestion, apparent speed, visibility and confidence. The model is deliberately not allowed to invent traffic flow rates or decibels; deterministic Python transforms validated observations into acoustic inputs, and NoiseModelling calculates the result.
+**Pydantic is the contract layer between AI, APIs and deterministic physics.** 
+
+Request/response models validate pipeline inputs, while Gemini's visual observation is constrained to a typed 
+`CameraObservation` schema — vehicle counts, congestion, apparent speed, visibility and confidence. 
+
+All architecture has an elevated robustness: the model is not allowed to invent traffic flow rates or decibels; 
+deterministic Python transforms validated observations into acoustic inputs, 
+and NoiseModelling calculates the result.
 
 ---
 
@@ -150,15 +155,15 @@ address
 
 ## 🔬 Design Principles
 
-| Principle | Implementation |
-|---|---|
-| **Real acoustic physics** | Noise levels come from NoiseModelling 6.0 / CNOSSOS, not an LLM. |
-| **Explicit provenance** | Every source, assumption and simulation artifact is recorded per run. |
-| **No hidden source fallback** | Missing providers stay missing; source changes are explicit configuration. |
+| Principle                       | Implementation                                                                               |
+|---------------------------------|----------------------------------------------------------------------------------------------|
+| **Real acoustic physics**       | Noise levels come from NoiseModelling 6.0 / CNOSSOS, not an LLM.                             |
+| **Explicit provenance**         | Every source, assumption and simulation artifact is recorded per run.                        |
+| **No hidden source fallback**   | Missing providers stay missing; source changes are explicit configuration.                   |
 | **Observed-data averages only** | Missing traffic values may use averages only from observations collected in the current run. |
-| **Localized AI influence** | JamCam observations affect only nearby supported roads and only the current time period. |
-| **Offline OSM geometry** | Production uses a local Greater London GeoPackage instead of public Overpass. |
-| **Reproducible runs** | Every stage writes inspectable JSON, GeoJSON, imagery and NoiseModelling logs. |
+| **Localized AI influence**      | JamCam observations affect only nearby supported roads and only the current time period.     |
+| **Offline OSM geometry**        | Production uses a local Greater London GeoPackage instead of public Overpass.                |
+| **Reproducible runs**           | Every stage writes inspectable JSON, GeoJSON, imagery and NoiseModelling logs.               |
 
 The baseline and live scenarios are deliberately isolated. A camera snapshot can influence the **current D/E/N period**, but it never rewrites the strategic **DEN baseline**.
 
