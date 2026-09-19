@@ -31,7 +31,14 @@ def run_preflight(settings: Settings) -> dict:
 
     checks.append(_check("TFL_APP_KEY", bool(settings.tfl_app_key), "TfL Unified API key; endpoint may reject anonymous calls"))
     checks.append(_check("DfT API", True, "no authentication required"))
-    checks.append(_check("OSM/Overpass", True, "no key; community service and subject to availability"))
+    checks.append(
+        _check(
+            "OSM/Overpass providers",
+            bool(settings.osm_overpass_urls),
+            ", ".join(settings.osm_overpass_urls) or "not configured",
+            required=True,
+        )
+    )
 
     for module in ("geopandas", "osmnx", "shapely", "google.genai"):
         try:
@@ -69,6 +76,10 @@ def run_preflight(settings: Settings) -> dict:
             "target_epsg": settings.target_epsg,
             "dft_year": settings.dft_year,
             "dft_year_lookback": settings.dft_year_lookback,
+            "osm_overpass_urls": list(settings.osm_overpass_urls),
+            "osm_overpass_retries": settings.osm_overpass_retries,
+            "osm_overpass_timeout_sec": settings.osm_overpass_timeout_sec,
+            "osm_overpass_rate_limit": settings.osm_overpass_rate_limit,
             "traffic_missing_policy": settings.traffic_missing_policy,
             "noise_max_source_distance_m": settings.noise_max_source_distance_m,
             "noise_diff_horizontal": settings.noise_diff_horizontal,
@@ -77,3 +88,4 @@ def run_preflight(settings: Settings) -> dict:
             "nm_mode": settings.nm_mode,
         },
     }
+

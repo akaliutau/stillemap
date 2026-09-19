@@ -146,10 +146,18 @@ class Pipeline:
         if not flags.skip_osm:
             stage = ctx.stage_dir(3, "osm")
             try:
-                buildings_raw, roads_raw = OSMService(self.settings).fetch(location.lat, location.lon)
+                buildings_raw, roads_raw, osm_meta = OSMService(self.settings).fetch(
+                    location.lat,
+                    location.lon,
+                )
                 ctx.dump_text(stage / "buildings_raw.geojson", buildings_raw.to_json())
                 ctx.dump_text(stage / "roads_raw.geojson", roads_raw.to_json())
-                result["osm"] = {"buildings": len(buildings_raw), "roads": len(roads_raw)}
+                ctx.dump_json(stage / "provider.json", osm_meta)
+                result["osm"] = {
+                    "buildings": len(buildings_raw),
+                    "roads": len(roads_raw),
+                    **osm_meta,
+                }
                 ctx.log.info("osm_collected", **result["osm"])
             except Exception as exc:
                 self._error(ctx, result, "osm", exc)
@@ -241,6 +249,7 @@ class Pipeline:
                         self.settings,
                         camera_observation=camera_obs,
                         live_period=live_period,
+                        camera=camera,
                     )
                     if candidate_live_meta.get("ai_adjustment") is not None:
                         live_roads = candidate_live_roads
@@ -423,3 +432,4 @@ class Pipeline:
     def _error(ctx: RunContext, result: dict, stage: str, exc: Exception) -> None:
         result["errors"].append({"stage": stage, "error": repr(exc)})
         ctx.log.error("stage_failed", exc=exc, stage=stage)
+

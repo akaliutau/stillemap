@@ -11,7 +11,7 @@ from shapely import force_3d
 from shapely.geometry import Point
 
 from .config import Settings
-from .models import CameraObservation
+from .models import CameraObservation, JamCam
 
 
 def first_tag(value: Any) -> str | None:
@@ -69,6 +69,21 @@ def _road_name_matches(road: pd.Series, dft: dict) -> bool:
     return dft_name in candidates
 
 
+def _road_group(road: pd.Series) -> str:
+    highway = (first_tag(road.get("highway")) or "").lower()
+    if highway in {
+        "motorway", "motorway_link", "trunk", "trunk_link",
+        "primary", "primary_link", "secondary", "secondary_link",
+    }:
+        return "major"
+    if highway in {
+        "tertiary", "tertiary_link", "residential", "living_street",
+        "unclassified", "service",
+    }:
+        return "local"
+    return "other"
+
+
 def dft_to_hourly_fields(row: dict, settings: Settings) -> dict[str, float | None]:
     cars = _num(row.get("cars_and_taxis"))
     lgvs = _num(row.get("lgvs"))
@@ -114,6 +129,55 @@ def ai_adjustment(observation: CameraObservation | None, min_confidence: float) 
     return flow, speed
 
 
+def _fill_run_averages(out: gpd.GeoDataFrame) -> tuple[dict[str, int], int]:
+    """Fill missing roads using same-class observations from this run when possible.
+
+    A current-run global mean is retained only as the final complete-surface fallback
+    when a road class has no directly observed DfT roads. No fixed class constants are used.
+    """
+    out["_ROAD_GROUP"] = out.apply(_road_group, axis=1)
+    averaged_by_group: dict[str, int] = {}
+
+    for group in ("major", "local", "other"):
+        group_mask = out["_ROAD_GROUP"].eq(group)
+        observed = out.loc[
+            group_mask & out["TRAF_SRC"].eq("dft"),
+            REQUIRED_TRAFFIC_FIELDS,
+        ]
+        means = {
+            field: pd.to_numeric(observed[field], errors="coerce").mean()
+            for field in REQUIRED_TRAFFIC_FIELDS
+        }
+        missing_mask = group_mask & out["TRAF_SRC"].isna()
+        for field, mean in means.items():
+            if not math.isnan(mean):
+                values = pd.to_numeric(out[field], errors="coerce")
+                out.loc[missing_mask, field] = values.loc[missing_mask].fillna(mean)
+
+        filled = missing_mask & out[REQUIRED_TRAFFIC_FIELDS].notna().all(axis=1)
+        out.loc[filled, "TRAF_SRC"] = "observed_run_average"
+        averaged_by_group[group] = int(filled.sum())
+
+    remaining = out["TRAF_SRC"].isna()
+    averaged_global = 0
+    if remaining.any():
+        observed = out.loc[out["TRAF_SRC"].eq("dft"), REQUIRED_TRAFFIC_FIELDS]
+        global_means = {
+            field: pd.to_numeric(observed[field], errors="coerce").mean()
+            for field in REQUIRED_TRAFFIC_FIELDS
+        }
+        for field, mean in global_means.items():
+            if not math.isnan(mean):
+                values = pd.to_numeric(out[field], errors="coerce")
+                out.loc[remaining, field] = values.loc[remaining].fillna(mean)
+
+        globally_filled = remaining & out[REQUIRED_TRAFFIC_FIELDS].notna().all(axis=1)
+        out.loc[globally_filled, "TRAF_SRC"] = "observed_run_average"
+        averaged_global = int(globally_filled.sum())
+
+    return averaged_by_group, averaged_global
+
+
 def assign_traffic(
     roads: gpd.GeoDataFrame,
     nearby_dft: list[dict],
@@ -121,12 +185,13 @@ def assign_traffic(
     camera_observation: CameraObservation | None = None,
     *,
     live_period: str | None = None,
+    camera: JamCam | None = None,
 ) -> tuple[gpd.GeoDataFrame, dict]:
     """Attach CNOSSOS traffic fields to OSM roads.
 
-    Baseline calls pass camera_observation=None. A live scenario passes a camera
-    observation and one current D/E/N period; the AI multiplier is applied only to
-    that period, so the camera never contaminates baseline DEN traffic.
+    Baseline calls pass camera_observation=None. A live scenario passes a camera,
+    observation and current D/E/N period. The live multiplier is applied only to
+    directly DfT-supported roads within the configured camera influence radius.
     """
     out = roads.copy()
     for field in REQUIRED_TRAFFIC_FIELDS:
@@ -178,36 +243,40 @@ def assign_traffic(
             values[f"LV_SPD_{p}"] = speed
             values[f"HGV_SPD_{p}"] = speed
 
-        if ai_mult is not None and period is not None:
-            flow_mult, speed_mult = ai_mult
-            for field in (f"LV_{period}", f"HGV_{period}"):
-                if values[field] is not None:
-                    values[field] = float(values[field]) * flow_mult
-            for field in (f"LV_SPD_{period}", f"HGV_SPD_{period}"):
-                if values[field] is not None:
-                    values[field] = float(values[field]) * speed_mult
-
         for field, value in values.items():
             out.at[idx, field] = value
         out.at[idx, "DFT_ID"] = str(dft.get("count_point_id")) if dft.get("count_point_id") is not None else None
         out.at[idx, "DFT_DIST"] = dist
-        out.at[idx, "TRAF_SRC"] = "dft+jamcam_ai" if ai_mult is not None else "dft"
+        out.at[idx, "TRAF_SRC"] = "dft"
         matched += 1
 
-    # Explicit application policy. No hard-coded London traffic fallback: averages
-    # are derived only from valid road observations present in this run.
     before_policy = len(out)
+    averaged_by_group: dict[str, int] = {}
+    averaged_global = 0
     if settings.traffic_missing_policy == "average":
-        means = {f: pd.to_numeric(out[f], errors="coerce").mean() for f in REQUIRED_TRAFFIC_FIELDS}
-        for field, mean in means.items():
-            if not math.isnan(mean):
-                out[field] = pd.to_numeric(out[field], errors="coerce").fillna(mean)
-        averaged_mask = out["TRAF_SRC"].isna() & out[REQUIRED_TRAFFIC_FIELDS].notna().all(axis=1)
-        out.loc[averaged_mask, "TRAF_SRC"] = "observed_run_average"
+        averaged_by_group, averaged_global = _fill_run_averages(out)
 
     valid_mask = out[REQUIRED_TRAFFIC_FIELDS].notna().all(axis=1)
     simulation_roads = out.loc[valid_mask].copy()
     simulation_roads.reset_index(drop=True, inplace=True)
+
+    ai_adjusted_roads = 0
+    if ai_mult is not None and period is not None and camera is not None:
+        camera_point = gpd.GeoSeries(
+            [Point(camera.lon, camera.lat)], crs=4326
+        ).to_crs(settings.target_epsg).iloc[0]
+        distance_to_camera = simulation_roads.geometry.distance(camera_point)
+        ai_mask = (
+            distance_to_camera.le(settings.ai_camera_influence_radius_m)
+            & simulation_roads["TRAF_SRC"].eq("dft")
+        )
+        flow_mult, speed_mult = ai_mult
+        for field in (f"LV_{period}", f"HGV_{period}"):
+            simulation_roads.loc[ai_mask, field] *= flow_mult
+        for field in (f"LV_SPD_{period}", f"HGV_SPD_{period}"):
+            simulation_roads.loc[ai_mask, field] *= speed_mult
+        simulation_roads.loc[ai_mask, "TRAF_SRC"] = "dft+jamcam_ai"
+        ai_adjusted_roads = int(ai_mask.sum())
 
     # NoiseModelling requires XYZ source geometry. CNOSSOS road source height = 5 cm.
     simulation_roads["geometry"] = simulation_roads.geometry.apply(
@@ -222,10 +291,16 @@ def assign_traffic(
         "missing_policy": settings.traffic_missing_policy,
         "simulation_roads": len(simulation_roads),
         "roads_skipped": before_policy - len(simulation_roads),
+        "averaged_by_road_group": averaged_by_group,
+        "averaged_global": averaged_global,
         "ai_adjusted_period": period if ai_mult is not None else None,
         "ai_adjustment": None if ai_mult is None else {
             "flow_multiplier": ai_mult[0],
             "speed_multiplier": ai_mult[1],
         },
+        "ai_camera_influence_radius_m": (
+            settings.ai_camera_influence_radius_m if ai_mult is not None else None
+        ),
+        "ai_adjusted_roads": ai_adjusted_roads,
     }
     return simulation_roads, debug
