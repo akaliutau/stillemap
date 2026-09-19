@@ -106,16 +106,15 @@ scripts/deploy_service.sh
 ```
 
 Both scripts load `.env`. `deploy_infra.sh` copies `GOOGLE_MAPS_API_KEY` and `TFL_APP_KEY` into Secret Manager when present. 
-If a value and its secret are both absent, it is deliberately skipped rather than invented. 
+If a value and its secret are both absent, then it is skipped. 
 `GEMINI_API_KEY` is only synced when `GOOGLE_GENAI_USE_VERTEXAI=false`; 
 the normal Vertex AI path uses the Cloud Run service account and ADC.
 
-For the demo the defaults use `europe-west2`, 4 CPU, 8 GiB, concurrency 1, and one warm instance. 
-Set `CLOUD_RUN_MIN_INSTANCES=0` after the event if you do not want an idle warm instance.
+For the demo the defaults use `europe-west2`, 4 CPU, 8 GiB, concurrency 1, and one warm instance.
 
 ## 2. Build NoiseModelling
 
-The image pins **NoiseModelling 6.0.0** and Java 21. NoiseModelling 6.0.0 documents Java >= 11, so Java 21 is deliberately conservative.
+The image pins **NoiseModelling 6.0.0** and Java 21. NoiseModelling 6.0.0 documents Java >= 11.
 
 ```bash
 make nm-build
@@ -142,7 +141,7 @@ make nm-check
 or:
 
 ```bash
-docker compose run --rm noisemodelling-check
+sudo docker compose run --rm noisemodelling-check
 ```
 
 Expected result: `ScriptRunner` prints its CLI/help text and exits successfully.
