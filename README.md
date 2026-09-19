@@ -197,6 +197,34 @@ GOOGLE_MAPS_API_KEY=...
 TFL_APP_KEY=...
 ```
 
+To create API keys, use the standard approach, f.e. 
+```bash
+gcloud services enable \
+  geocoding-backend.googleapis.com \
+  weather.googleapis.com
+```
+
+then:
+
+Google Cloud Console
+-> APIs & Services
+-> Credentials
+-> Create credentials
+-> API key
+
+Put the keys in `.env` file
+
+
+| Credential            |               Needed? | Used for                                                         |
+|-----------------------|----------------------:|------------------------------------------------------------------|
+| `GOOGLE_MAPS_API_KEY` |               **Yes** | Google Geocoding + Google Weather                                |
+| `TFL_APP_KEY`         |               **Yes** | TfL Unified API / JamCam discovery                               |
+| `GEMINI_API_KEY`      | **No** with Vertex AI | Only needed if you bypass Vertex AI and call Gemini API directly |
+| GCP credentials / ADC |               **Yes** | Vertex AI Gemini + deployment                                    |
+| DfT key               |                **No** | DfT API is unauthenticated                                       |
+| OSM key               |                **No** | Public OSM/Overpass                                              |
+| NoiseModelling key    |                **No** | Open-source local runtime                                        |
+
 ### 3. Build the local London OSM cache
 
 ```bash
