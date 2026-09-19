@@ -31,16 +31,30 @@ def run_preflight(settings: Settings) -> dict:
 
     checks.append(_check("TFL_APP_KEY", bool(settings.tfl_app_key), "TfL Unified API key; endpoint may reject anonymous calls"))
     checks.append(_check("DfT API", True, "no authentication required"))
-    checks.append(
-        _check(
-            "OSM/Overpass providers",
-            bool(settings.osm_overpass_urls),
-            ", ".join(settings.osm_overpass_urls) or "not configured",
-            required=True,
+    if settings.osm_source == "local_gpkg":
+        osm_path = settings.osm_local_gpkg_path
+        osm_exists = osm_path.is_file()
+        detail = str(osm_path.resolve())
+        if osm_exists:
+            detail += f" ({osm_path.stat().st_size / (1024 * 1024):.1f} MiB)"
+        else:
+            detail += " (missing; run scripts/download_osm_cache.sh)"
+        checks.append(_check("OSM local GeoPackage", osm_exists, detail, required=True))
+    else:
+        checks.append(
+            _check(
+                "OSM/Overpass providers",
+                bool(settings.osm_overpass_urls),
+                ", ".join(settings.osm_overpass_urls) or "not configured",
+                required=True,
+            )
         )
-    )
 
-    for module in ("geopandas", "osmnx", "shapely", "google.genai"):
+    required_modules = ["geopandas", "shapely", "google.genai"]
+    if settings.osm_source == "overpass":
+        required_modules.append("osmnx")
+
+    for module in required_modules:
         try:
             found = importlib.util.find_spec(module) is not None
         except (ModuleNotFoundError, ValueError):
@@ -76,6 +90,8 @@ def run_preflight(settings: Settings) -> dict:
             "target_epsg": settings.target_epsg,
             "dft_year": settings.dft_year,
             "dft_year_lookback": settings.dft_year_lookback,
+            "osm_source": settings.osm_source,
+            "osm_local_gpkg_path": str(settings.osm_local_gpkg_path),
             "osm_overpass_urls": list(settings.osm_overpass_urls),
             "osm_overpass_retries": settings.osm_overpass_retries,
             "osm_overpass_timeout_sec": settings.osm_overpass_timeout_sec,

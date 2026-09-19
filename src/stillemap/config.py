@@ -52,6 +52,8 @@ class Settings:
     dft_max_points: int
 
     osm_radius_m: int
+    osm_source: str
+    osm_local_gpkg_path: Path
     osm_overpass_urls: tuple[str, ...]
     osm_overpass_retries: int
     osm_overpass_retry_delay_sec: float
@@ -111,6 +113,13 @@ class Settings:
             dft_road_match_radius_m=_int("DFT_ROAD_MATCH_RADIUS_M", 60),
             dft_max_points=_int("DFT_MAX_POINTS", 40),
             osm_radius_m=_int("OSM_RADIUS_M", 450),
+            osm_source=os.getenv("OSM_SOURCE", "local_gpkg").strip().lower(),
+            osm_local_gpkg_path=Path(
+                os.getenv(
+                    "OSM_LOCAL_GPKG_PATH",
+                    "src/stillemap/data/greater-london.gpkg",
+                )
+            ),
             osm_overpass_urls=_overpass_urls(),
             osm_overpass_retries=_int("OSM_OVERPASS_RETRIES", 2),
             osm_overpass_retry_delay_sec=_float("OSM_OVERPASS_RETRY_DELAY_SEC", 1.0),
@@ -164,18 +173,21 @@ class Settings:
             raise ValueError("NOISE_DISPLAY_MAX_DB must be greater than NOISE_DISPLAY_MIN_DB")
         if self.ai_camera_influence_radius_m <= 0:
             raise ValueError("AI_CAMERA_INFLUENCE_RADIUS_M must be > 0")
-        if not self.osm_overpass_urls:
-            raise ValueError(
-                "Configure at least one Overpass provider with OSM_OVERPASS_URLS "
-                "(or legacy OSM_OVERPASS_URL)"
-            )
-        for url in self.osm_overpass_urls:
-            if not url.startswith(("https://", "http://")) or any(ch in url for ch in "[]()"):
+        if self.osm_source not in {"local_gpkg", "overpass"}:
+            raise ValueError("OSM_SOURCE must be 'local_gpkg' or 'overpass'")
+        if self.osm_source == "overpass":
+            if not self.osm_overpass_urls:
                 raise ValueError(
-                    f"Invalid Overpass URL {url!r}; use a plain URL, not Markdown link syntax"
+                    "OSM_SOURCE=overpass requires OSM_OVERPASS_URLS "
+                    "(or legacy OSM_OVERPASS_URL)"
                 )
-        if self.osm_overpass_retries < 1:
-            raise ValueError("OSM_OVERPASS_RETRIES must be >= 1")
-        if self.osm_overpass_timeout_sec <= 0:
-            raise ValueError("OSM_OVERPASS_TIMEOUT_SEC must be > 0")
+            for url in self.osm_overpass_urls:
+                if not url.startswith(("https://", "http://")) or any(ch in url for ch in "[]()"):
+                    raise ValueError(
+                        f"Invalid Overpass URL {url!r}; use a plain URL, not Markdown link syntax"
+                    )
+            if self.osm_overpass_retries < 1:
+                raise ValueError("OSM_OVERPASS_RETRIES must be >= 1")
+            if self.osm_overpass_timeout_sec <= 0:
+                raise ValueError("OSM_OVERPASS_TIMEOUT_SEC must be > 0")
 

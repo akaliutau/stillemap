@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import geopandas as gpd
-import osmnx as ox
+from shapely.geometry import Point
 
 from ..config import Settings
 
@@ -48,12 +50,86 @@ class OSMService:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    def _configure_provider(self, provider: str) -> str:
-        base = _normalize_overpass_base(provider)
-        ox.settings.overpass_url = base
-        ox.settings.requests_timeout = self.settings.osm_overpass_timeout_sec
-        ox.settings.overpass_rate_limit = self.settings.osm_overpass_rate_limit
-        return base
+    def _local_radius(
+        self,
+        lat: float,
+        lon: float,
+    ) -> tuple[object, tuple[float, float, float, float]]:
+        center_wgs = gpd.GeoSeries([Point(lon, lat)], crs=4326)
+        center_metric = center_wgs.to_crs(self.settings.target_epsg).iloc[0]
+        area_metric = center_metric.buffer(self.settings.osm_radius_m)
+        area_wgs = gpd.GeoSeries(
+            [area_metric],
+            crs=self.settings.target_epsg,
+        ).to_crs(4326).iloc[0]
+        return area_metric, tuple(float(value) for value in area_wgs.bounds)
+
+    def _fetch_local(
+        self,
+        lat: float,
+        lon: float,
+    ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, dict]:
+        path = self.settings.osm_local_gpkg_path
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Local OSM GeoPackage not found: {path}. "
+                "Run scripts/download_osm_cache.sh before starting StilleMap."
+            )
+
+        area_metric, bbox_wgs = self._local_radius(lat, lon)
+
+        buildings = gpd.read_file(path, layer="buildings", bbox=bbox_wgs)
+        roads = gpd.read_file(path, layer="roads", bbox=bbox_wgs)
+
+        if buildings.crs is None or roads.crs is None:
+            raise RuntimeError(f"Local OSM cache has missing CRS metadata: {path}")
+
+        buildings = buildings.to_crs(self.settings.target_epsg)
+        roads = roads.to_crs(self.settings.target_epsg)
+
+        buildings = buildings[
+            buildings.geometry.geom_type.isin(["Polygon", "MultiPolygon"])
+            & buildings.geometry.intersects(area_metric)
+        ].copy()
+        roads = roads[
+            roads.geometry.geom_type.isin(["LineString", "MultiLineString"])
+            & roads.geometry.intersects(area_metric)
+        ].copy()
+
+        if "highway" in roads.columns:
+            roads = roads[
+                roads["highway"].map(first_tag).isin(DRIVABLE_HIGHWAYS)
+            ].copy()
+
+        if "building_levels" in buildings.columns and "building:levels" not in buildings.columns:
+            buildings = buildings.rename(columns={"building_levels": "building:levels"})
+
+        buildings = buildings.reset_index(drop=True)
+        roads = roads.reset_index(drop=True)
+
+        if buildings.empty:
+            raise RuntimeError(
+                f"Local OSM cache contains no building polygons within "
+                f"{self.settings.osm_radius_m} m of {lat},{lon}"
+            )
+        if roads.empty:
+            raise RuntimeError(
+                f"Local OSM cache contains no drivable roads within "
+                f"{self.settings.osm_radius_m} m of {lat},{lon}"
+            )
+
+        stat = path.stat()
+        return buildings, roads, {
+            "source": "local_gpkg",
+            "cache_path": str(path),
+            "cache_size_bytes": stat.st_size,
+            "cache_modified_utc": datetime.fromtimestamp(
+                stat.st_mtime,
+                tz=timezone.utc,
+            ).isoformat(),
+            "query_mode": "local_spatial_filter",
+            "network_used": False,
+        }
 
     def _split_features(
         self,
@@ -91,25 +167,24 @@ class OSMService:
         )
         return buildings, roads
 
-    def fetch(
+    def _fetch_overpass(
         self,
         lat: float,
         lon: float,
     ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, dict]:
-        """Fetch buildings and roads with one Overpass query.
+        # Lazy import means local_gpkg mode does not depend on OSMnx/Overpass at runtime.
+        import osmnx as ox
 
-        Providers are explicitly configured in OSM_OVERPASS_URLS and tried in order.
-        A successful provider is recorded in the returned metadata. No other provider
-        or data source is invented.
-        """
         failures: list[dict[str, Any]] = []
 
         for configured_provider in self.settings.osm_overpass_urls:
-            provider = self._configure_provider(configured_provider)
+            provider = _normalize_overpass_base(configured_provider)
+            ox.settings.overpass_url = provider
+            ox.settings.requests_timeout = self.settings.osm_overpass_timeout_sec
+            ox.settings.overpass_rate_limit = self.settings.osm_overpass_rate_limit
 
             for attempt in range(1, self.settings.osm_overpass_retries + 1):
                 try:
-                    # One request supplies both geometry products needed downstream.
                     features = ox.features_from_point(
                         (lat, lon),
                         tags={"building": True, "highway": True},
@@ -117,6 +192,7 @@ class OSMService:
                     )
                     buildings, roads = self._split_features(features)
                     return buildings, roads, {
+                        "source": "overpass",
                         "provider": provider,
                         "attempt": attempt,
                         "providers_configured": [
@@ -125,6 +201,7 @@ class OSMService:
                         ],
                         "provider_failures": failures,
                         "query_mode": "single_features_query",
+                        "network_used": True,
                         "overpass_rate_limit": self.settings.osm_overpass_rate_limit,
                         "overpass_timeout_sec": self.settings.osm_overpass_timeout_sec,
                     }
@@ -148,3 +225,12 @@ class OSMService:
         raise RuntimeError(
             "All explicitly configured Overpass providers failed. " + details
         )
+
+    def fetch(
+        self,
+        lat: float,
+        lon: float,
+    ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, dict]:
+        if self.settings.osm_source == "local_gpkg":
+            return self._fetch_local(lat, lon)
+        return self._fetch_overpass(lat, lon)
