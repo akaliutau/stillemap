@@ -15,6 +15,28 @@ let activeScenario = "baseline";
 let scenarioData = { baseline: null, live: null };
 let scenarioRoads = { baseline: null, live: null };
 let noiseEventsBound = false;
+let activeRunId = null;
+
+const PIPELINE_STEPS = [
+  ["location", "Locate address"],
+  ["weather", "Weather context"],
+  ["osm", "OSM streets + buildings"],
+  ["dft", "DfT traffic counts"],
+  ["tfl", "TfL JamCam"],
+  ["ai_camera", "Gemini traffic vision"],
+  ["prepare", "Build acoustic scene"],
+  ["noise_baseline", "CNOSSOS baseline"],
+  ["noise_live", "CNOSSOS live scenario"],
+  ["ai_explain", "Gemini explanation"],
+];
+
+const EMPTY_GEOJSON = { type: "FeatureCollection", features: [] };
+const DEFAULT_VIEW = {
+  center: [-0.1276, 51.5034],
+  zoom: 14.7,
+  pitch: 0,
+  bearing: 0,
+};
 
 function setStatus(text, kind = "idle") {
   $("status-text").textContent = text;
@@ -25,8 +47,142 @@ function fmtDb(value) {
   return Number.isFinite(Number(value)) ? `${Number(value).toFixed(1)} dB` : "—";
 }
 
+function fmtDelta(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  if (number !== 0 && Math.abs(number) < 0.01) {
+    return `${number > 0 ? "+" : "−"}<0.01 dB`;
+  }
+  const sign = number > 0 ? "+" : "";
+  return `${sign}${number.toFixed(2)} dB`;
+}
+
+function resetDemoState() {
+  lastResult = null;
+  activeRunId = null;
+  activeScenario = "baseline";
+  scenarioData = { baseline: null, live: null };
+  scenarioRoads = { baseline: null, live: null };
+
+  if (locationMarker) {
+    locationMarker.remove();
+    locationMarker = null;
+  }
+
+  document.querySelectorAll(".maplibregl-popup").forEach((node) => node.remove());
+
+  const noiseSource = map.getSource("noise");
+  if (noiseSource) noiseSource.setData(EMPTY_GEOJSON);
+  const roadSource = map.getSource("roads");
+  if (roadSource) roadSource.setData(EMPTY_GEOJSON);
+
+  $("scenario-baseline").checked = true;
+  $("scenario-live").checked = false;
+  $("scenario-live").disabled = true;
+  $("heat-toggle").checked = true;
+  $("points-toggle").checked = true;
+  $("roads-toggle").checked = true;
+
+  for (const layerId of ["noise-heat", "noise-points", "model-roads"]) {
+    if (map.getLayer(layerId)) {
+      map.setLayoutProperty(layerId, "visibility", "visible");
+    }
+  }
+
+  $("run-id").textContent = "";
+  $("metric-center").textContent = "—";
+  $("metric-max").textContent = "—";
+  $("metric-p95").textContent = "—";
+  $("metric-receivers").textContent = "—";
+  $("metric-center-distance").textContent = "";
+  $("badges").innerHTML = "";
+  $("model-facts").innerHTML = "";
+  $("explanation-headline").textContent = "What this means";
+  $("explanation").textContent = "";
+  $("caveat").textContent = "";
+  $("errors").textContent = "";
+
+  setVisible("metrics", false);
+  setVisible("provenance", false);
+  setVisible("explanation-panel", false);
+  setVisible("errors-panel", false);
+  setVisible("pipeline-panel", false);
+  hideCameraFrame();
+
+  map.stop();
+  map.jumpTo(DEFAULT_VIEW);
+}
+
 function setVisible(id, visible = true) {
   $(id).classList.toggle("hidden", !visible);
+}
+
+function resetPipeline() {
+  $("pipeline-list").innerHTML = PIPELINE_STEPS.map(([key, label]) => `
+    <li class="pipeline-step" data-stage="${key}">
+      <span class="pipeline-dot"></span>
+      <span class="pipeline-copy">
+        <span>${label}</span>
+        <span class="pipeline-detail"></span>
+      </span>
+    </li>
+  `).join("");
+  $("pipeline-live").textContent = "starting";
+  setVisible("pipeline-panel", true);
+}
+
+function progressDetail(event) {
+  if (event.stage === "osm" && event.provider) {
+    try { return new URL(event.provider).hostname; } catch (_) { return "geometry ready"; }
+  }
+  if (event.stage === "dft" && event.nearby_points != null) return `${event.nearby_points} nearby`;
+  if (event.stage === "ai_camera" && event.confidence != null) return `${Math.round(Number(event.confidence) * 100)}% confidence`;
+  if (event.stage === "prepare" && event.receivers != null) return `${event.receivers} receivers`;
+  if (event.stage.startsWith("noise_") && event.center_db != null) return `${Number(event.center_db).toFixed(1)} dB`;
+  if (event.status === "skipped") return "skipped";
+  if (event.status === "failed") return "failed";
+  return "";
+}
+
+function updatePipeline(event) {
+  if (event.run_id) {
+    activeRunId = event.run_id;
+    $("run-id").textContent = `run: ${event.run_id}`;
+  }
+  if (event.stage === "pipeline") {
+    $("pipeline-live").textContent = event.status === "running"
+      ? "live"
+      : (event.status === "complete" ? "complete" : "finished");
+    return;
+  }
+  if (event.stage === "preflight") return;
+
+  const row = document.querySelector(`.pipeline-step[data-stage="${event.stage}"]`);
+  if (!row) return;
+  row.classList.remove("running", "complete", "failed", "skipped");
+  row.classList.add(event.status === "complete" ? "complete" : event.status);
+  const detail = row.querySelector(".pipeline-detail");
+  if (detail) detail.textContent = progressDetail(event);
+
+  if (event.stage === "tfl" && event.status === "complete" && event.frame_available && event.run_id) {
+    showCameraFrame(event.run_id, event.camera || null);
+  }
+}
+
+function hideCameraFrame() {
+  $("camera-frame").removeAttribute("src");
+  setVisible("camera-preview", false);
+}
+
+function showCameraFrame(runId, camera = null) {
+  if (!runId) return;
+  $("camera-name").textContent = camera?.common_name || "TfL camera";
+  $("camera-foot").textContent = camera?.view
+    ? `${camera.view} · frame used for Gemini analysis`
+    : "Frame used for Gemini traffic analysis";
+  $("camera-frame").src = `/runs/${encodeURIComponent(runId)}/camera/frame?t=${Date.now()}`;
+  $("camera-frame").onload = () => setVisible("camera-preview", true);
+  $("camera-frame").onerror = () => setVisible("camera-preview", false);
 }
 
 function setSourceData(name, data) {
@@ -175,8 +331,13 @@ function renderScenario(kind) {
     const parts = [];
     if (noise.center_receiver_distance_m != null) parts.push(`nearest receiver ${noise.center_receiver_distance_m} m away`);
     if (kind === "live" && delta?.center_db != null) {
-      const sign = Number(delta.center_db) > 0 ? "+" : "";
-      parts.push(`${sign}${Number(delta.center_db).toFixed(1)} dB vs baseline ${delta.period}`);
+      parts.push(`${fmtDelta(delta.center_db)} vs baseline ${delta.period}`);
+      if (
+        delta.address_inside_camera_influence === false
+        && delta.camera_influence_radius_m != null
+      ) {
+        parts.push(`selected address outside ${delta.camera_influence_radius_m} m JamCam influence`);
+      }
     }
     $("metric-center-distance").textContent = parts.join(" · ");
   }
@@ -196,6 +357,13 @@ function renderScenario(kind) {
       ? Math.max(0, (traffic.simulation_roads || 0) - (traffic.roads_matched_to_dft || 0))
       : traffic.roads_skipped) : null],
     ["AI adjusted period", traffic?.ai_adjusted_period],
+    ["AI adjusted roads", kind === "live" ? traffic?.ai_adjusted_roads : null],
+    ["JamCam distance", kind === "live" && delta?.camera_distance_m != null
+      ? `${Math.round(delta.camera_distance_m)} m` : null],
+    ["JamCam influence", kind === "live" && delta?.camera_influence_radius_m != null
+      ? `${delta.camera_influence_radius_m} m` : null],
+    ["Area mean Δ", kind === "live" && delta?.area_mean_db != null
+      ? fmtDelta(delta.area_mean_db) : null],
     ["Stats floor", noise.stats_floor_db != null ? `${noise.stats_floor_db} dB` : null],
     ["Display range", noise.display_min_db != null ? `${noise.display_min_db}–${noise.display_max_db} dB` : null],
   ].filter(([, v]) => v !== undefined && v !== null);
@@ -236,7 +404,11 @@ async function loadMapData(result) {
 
 function renderResult(result) {
   lastResult = result;
+  activeRunId = result.run_id || activeRunId;
   const baseline = result.noise?.baseline;
+  if (result.links?.camera_frame && result.run_id) {
+    showCameraFrame(result.run_id, result.jamcam || null);
+  }
   $("run-id").textContent = result.run_id ? `run: ${result.run_id}` : "";
   setVisible("metrics", !!baseline);
 
@@ -272,10 +444,12 @@ async function runSimulation(event) {
   if (!address) return;
 
   $("run-btn").disabled = true;
-  setStatus("Collecting London data and running CNOSSOS…", "running");
-  setVisible("errors-panel", false);
+  resetDemoState();
+  resetPipeline();
+  setStatus("Running staged London noise simulation…", "running");
+
   try {
-    const response = await fetch("/simulate", {
+    const response = await fetch("/simulate/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -286,14 +460,57 @@ async function runSimulation(event) {
         skip_noise: false,
       }),
     });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
-    renderResult(result);
-    await loadMapData(result);
-    const errorCount = (result.errors || []).length;
-    setStatus(errorCount ? `Finished with ${errorCount} stage error(s)` : "Simulation complete", errorCount ? "error" : "ok");
+
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try {
+        const body = await response.json();
+        message = body.detail || message;
+      } catch (_) {}
+      throw new Error(message);
+    }
+    if (!response.body) throw new Error("Streaming response body unavailable");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalResult = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+      let newline;
+      while ((newline = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (!line) continue;
+
+        const eventData = JSON.parse(line);
+        if (eventData.type === "progress") {
+          updatePipeline(eventData);
+        } else if (eventData.type === "result") {
+          finalResult = eventData.result;
+        } else if (eventData.type === "fatal") {
+          throw new Error(eventData.error || "Simulation failed");
+        }
+      }
+
+      if (done) break;
+    }
+
+    if (!finalResult) throw new Error("Simulation finished without a result");
+
+    renderResult(finalResult);
+    await loadMapData(finalResult);
+    const errorCount = (finalResult.errors || []).length;
+    setStatus(
+      errorCount ? `Finished with ${errorCount} stage error(s)` : "Simulation complete",
+      errorCount ? "error" : "ok"
+    );
   } catch (err) {
     setStatus("Simulation failed", "error");
+    $("pipeline-live").textContent = "failed";
     setVisible("errors-panel", true);
     $("errors").textContent = String(err?.stack || err);
   } finally {
@@ -315,3 +532,4 @@ map.on("load", () => {
     if (map.getLayer("model-roads")) map.setLayoutProperty("model-roads", "visibility", e.target.checked ? "visible" : "none");
   });
 });
+

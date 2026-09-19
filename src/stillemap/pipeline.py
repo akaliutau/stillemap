@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import geopandas as gpd
@@ -53,6 +53,7 @@ class Pipeline:
         lat: float | None = None,
         lon: float | None = None,
         flags: PipelineFlags | None = None,
+        progress: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         flags = flags or PipelineFlags()
         label = address or (f"{lat},{lon}" if lat is not None and lon is not None else "pipeline")
@@ -80,11 +81,26 @@ class Pipeline:
             "errors": [],
         }
 
+        def emit_progress(stage: str, status: str, **data: Any) -> None:
+            if progress is None:
+                return
+            progress(
+                {
+                    "run_id": ctx.root.name,
+                    "stage": stage,
+                    "status": status,
+                    **data,
+                }
+            )
+
+        emit_progress("pipeline", "running", address=address)
+
         # 00 preflight
         preflight_dir = ctx.stage_dir(0, "preflight")
         preflight = run_preflight(self.settings)
         ctx.dump_json(preflight_dir / "report.json", preflight)
         result["preflight"] = preflight
+        emit_progress("preflight", "complete", ok=preflight.get("ok", False))
         plan = {
             "stages": [
                 "geocode",
@@ -104,9 +120,11 @@ class Pipeline:
         if flags.no_run:
             ctx.log.info("no_run_requested", note="preflight + plan only; no external data collection")
             ctx.dump_json(ctx.root / "result.json", result)
+            emit_progress("pipeline", "complete")
             return result
 
         # 01 location
+        emit_progress("location", "running")
         location: LatLon | None = None
         geocode_dir = ctx.stage_dir(1, "geocode")
         if lat is not None and lon is not None:
@@ -122,13 +140,21 @@ class Pipeline:
             except Exception as exc:
                 self._error(ctx, result, "geocode", exc)
         result["location"] = location.model_dump() if location else None
+        if location is not None:
+            emit_progress("location", "complete", location=location.model_dump())
         if location is None:
             ctx.log.warn("pipeline_stopped_no_location")
+            emit_progress("location", "failed")
             ctx.dump_json(ctx.root / "result.json", result)
+            emit_progress("pipeline", "failed")
             return result
 
         # 02 weather
         weather: WeatherObservation | None = None
+        if flags.skip_weather:
+            emit_progress("weather", "skipped")
+        else:
+            emit_progress("weather", "running")
         if not flags.skip_weather:
             stage = ctx.stage_dir(2, "weather")
             try:
@@ -138,9 +164,13 @@ class Pipeline:
                     ctx.dump_json(stage / "weather.json", weather.model_dump())
             except Exception as exc:
                 self._error(ctx, result, "weather", exc)
+                emit_progress("weather", "failed", error=repr(exc))
         result["weather"] = weather.model_dump() if weather else None
+        if not flags.skip_weather and weather is not None:
+            emit_progress("weather", "complete")
 
         # 03 OSM
+        emit_progress("osm", "skipped" if flags.skip_osm else "running")
         buildings_raw: gpd.GeoDataFrame | None = None
         roads_raw: gpd.GeoDataFrame | None = None
         if not flags.skip_osm:
@@ -159,10 +189,19 @@ class Pipeline:
                     **osm_meta,
                 }
                 ctx.log.info("osm_collected", **result["osm"])
+                emit_progress(
+                    "osm",
+                    "complete",
+                    buildings=len(buildings_raw),
+                    roads=len(roads_raw),
+                    provider=osm_meta.get("provider"),
+                )
             except Exception as exc:
                 self._error(ctx, result, "osm", exc)
+                emit_progress("osm", "failed", error=repr(exc))
 
         # 04 DfT
+        emit_progress("dft", "skipped" if flags.skip_dft else "running")
         nearby_dft: list[dict] = []
         if not flags.skip_dft:
             stage = ctx.stage_dir(4, "dft")
@@ -182,10 +221,13 @@ class Pipeline:
                     "selection": raw.get("selection"),
                 }
                 ctx.log.info("dft_collected", nearby_points=len(nearby_dft), selection=raw.get("selection"))
+                emit_progress("dft", "complete", nearby_points=len(nearby_dft))
             except Exception as exc:
                 self._error(ctx, result, "dft", exc)
+                emit_progress("dft", "failed", error=repr(exc))
 
         # 05 TfL
+        emit_progress("tfl", "skipped" if flags.skip_tfl else "running")
         camera: JamCam | None = None
         frame_bytes: bytes | None = None
         frame_mime = "image/jpeg"
@@ -206,9 +248,25 @@ class Pipeline:
                         ctx.log.info("artifact_written", path=str(stage / f"camera_frame{ext}"), bytes=len(frame_bytes))
             except Exception as exc:
                 self._error(ctx, result, "tfl", exc)
+                emit_progress("tfl", "failed", error=repr(exc))
         result["jamcam"] = camera.model_dump() if camera else None
+        if not flags.skip_tfl and camera is not None:
+            emit_progress(
+                "tfl",
+                "complete",
+                camera=camera.model_dump(),
+                frame_available=bool(frame_bytes),
+            )
+        elif not flags.skip_tfl and camera is None:
+            emit_progress("tfl", "complete", frame_available=False)
 
         # 06 Gemini camera inspection
+        if flags.skip_ai:
+            emit_progress("ai_camera", "skipped")
+        elif not frame_bytes:
+            emit_progress("ai_camera", "skipped", reason="no_camera_frame")
+        else:
+            emit_progress("ai_camera", "running")
         camera_obs: CameraObservation | None = None
         gemini: Any | None = None
         if not flags.skip_ai and frame_bytes:
@@ -222,9 +280,13 @@ class Pipeline:
                 ctx.dump_json(stage / "observation.json", camera_obs.model_dump())
             except Exception as exc:
                 self._error(ctx, result, "ai_camera", exc)
+                emit_progress("ai_camera", "failed", error=repr(exc))
         result["camera_observation"] = camera_obs.model_dump() if camera_obs else None
+        if camera_obs is not None:
+            emit_progress("ai_camera", "complete", confidence=camera_obs.confidence)
 
         # 07 Prepare baseline + optional live inputs.
+        emit_progress("prepare", "running")
         prepare_dir = ctx.stage_dir(7, "prepare")
         prepared_buildings: gpd.GeoDataFrame | None = None
         baseline_roads: gpd.GeoDataFrame | None = None
@@ -303,10 +365,24 @@ class Pipeline:
                 }
                 ctx.dump_json(prepare_dir / "manifest.json", manifest)
                 result["prepare"] = manifest
+                emit_progress(
+                    "prepare",
+                    "complete",
+                    receivers=len(receivers),
+                    baseline_roads=len(baseline_roads),
+                    live_ready=live_roads is not None,
+                )
             except Exception as exc:
                 self._error(ctx, result, "prepare", exc)
+                emit_progress("prepare", "failed", error=repr(exc))
+        else:
+            emit_progress("prepare", "skipped", reason="missing_osm_inputs")
 
         # 08 Baseline NoiseModelling. This is the strategic-style DEN heatmap.
+        if flags.skip_noise:
+            emit_progress("noise_baseline", "skipped")
+        else:
+            emit_progress("noise_baseline", "running")
         baseline_summary: dict | None = None
         baseline_period_summary: dict | None = None
         if not flags.skip_noise:
@@ -348,12 +424,27 @@ class Pipeline:
                     )
                     ctx.dump_json(stage / "summary.json", baseline_summary)
                     ctx.dump_json(stage / f"summary_{live_period}.json", baseline_period_summary)
+                    emit_progress(
+                        "noise_baseline",
+                        "complete",
+                        period=baseline_summary.get("period"),
+                        center_db=baseline_summary.get("center_db"),
+                    )
                 except Exception as exc:
                     self._error(ctx, result, "noisemodelling_baseline", exc)
+                    emit_progress("noise_baseline", "failed", error=repr(exc))
+        elif not flags.skip_noise:
+            emit_progress("noise_baseline", "skipped", reason="missing_prepared_inputs")
 
         # 09 Optional live NoiseModelling scenario. Same engine, only current D/E/N
         # traffic fields may be adjusted from Gemini's JamCam observation.
         live_summary: dict | None = None
+        if flags.skip_noise:
+            emit_progress("noise_live", "skipped")
+        elif live_roads is None or len(live_roads) == 0:
+            emit_progress("noise_live", "skipped", reason="no_live_scenario")
+        else:
+            emit_progress("noise_live", "running")
         if not flags.skip_noise and live_roads is not None and len(live_roads) > 0:
             stage = ctx.stage_dir(9, "noisemodelling_live")
             try:
@@ -375,22 +466,60 @@ class Pipeline:
                     display_max_db=self.settings.noise_display_max_db,
                 )
                 ctx.dump_json(stage / "summary.json", live_summary)
+                emit_progress(
+                    "noise_live",
+                    "complete",
+                    period=live_summary.get("period"),
+                    center_db=live_summary.get("center_db"),
+                )
             except Exception as exc:
                 self._error(ctx, result, "noisemodelling_live", exc)
+                emit_progress("noise_live", "failed", error=repr(exc))
 
         delta: dict | None = None
         if baseline_period_summary is not None and live_summary is not None:
             baseline_center = baseline_period_summary.get("center_db")
             live_center = live_summary.get("center_db")
+            baseline_mean = baseline_period_summary.get("mean_db")
+            live_mean = live_summary.get("mean_db")
+
+            center_delta = (
+                float(live_center) - float(baseline_center)
+                if baseline_center is not None and live_center is not None
+                else None
+            )
+            area_mean_delta = (
+                float(live_mean) - float(baseline_mean)
+                if baseline_mean is not None and live_mean is not None
+                else None
+            )
+
+            camera_distance_m = (
+                float(camera.distance_m)
+                if camera is not None and camera.distance_m is not None
+                else None
+            )
+            camera_radius_m = (
+                self.settings.ai_camera_influence_radius_m
+                if live_meta is not None
+                else None
+            )
+            address_inside_camera_influence = (
+                camera_distance_m <= float(camera_radius_m)
+                if camera_distance_m is not None and camera_radius_m is not None
+                else None
+            )
+
             delta = {
                 "period": live_period,
-                "center_db": (
-                    round(float(live_center) - float(baseline_center), 3)
-                    if baseline_center is not None and live_center is not None
-                    else None
-                ),
+                # Preserve the actual acoustic delta. UI decides display precision.
+                "center_db": center_delta,
+                "area_mean_db": area_mean_delta,
                 "baseline_center_db": baseline_center,
                 "live_center_db": live_center,
+                "camera_distance_m": camera_distance_m,
+                "camera_influence_radius_m": camera_radius_m,
+                "address_inside_camera_influence": address_inside_camera_influence,
             }
 
         result["noise"] = {
@@ -401,6 +530,12 @@ class Pipeline:
         }
 
         # 10 AI explanation, grounded in pipeline facts only.
+        if flags.skip_ai:
+            emit_progress("ai_explain", "skipped")
+        elif baseline_summary is None:
+            emit_progress("ai_explain", "skipped", reason="no_baseline_result")
+        else:
+            emit_progress("ai_explain", "running")
         if not flags.skip_ai and baseline_summary is not None:
             stage = ctx.stage_dir(10, "ai_explain")
             try:
@@ -421,11 +556,18 @@ class Pipeline:
                 ctx.dump_text(stage / "raw_response.json", raw_text)
                 ctx.dump_json(stage / "explanation.json", explanation.model_dump())
                 result["ai_explanation"] = explanation.model_dump()
+                emit_progress("ai_explain", "complete")
             except Exception as exc:
                 self._error(ctx, result, "ai_explain", exc)
+                emit_progress("ai_explain", "failed", error=repr(exc))
 
         ctx.dump_json(ctx.root / "result.json", result)
         ctx.log.info("pipeline_done", run_dir=str(ctx.root), errors=len(result["errors"]))
+        emit_progress(
+            "pipeline",
+            "complete" if not result["errors"] else "complete_with_errors",
+            errors=len(result["errors"]),
+        )
         return result
 
     @staticmethod

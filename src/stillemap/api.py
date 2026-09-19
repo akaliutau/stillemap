@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import queue
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -83,6 +85,10 @@ def _decorate_result(result: dict) -> dict:
         links["roads_geojson"] = links["baseline_roads_geojson"]
     if prepare.get("live_road_map_geojson_path"):
         links["live_roads_geojson"] = f"/runs/{run_id}/roads/live.geojson"
+
+    camera_dir = settings.runs_dir / run_id / "05_tfl"
+    if any(camera_dir.glob("camera_frame.*")):
+        links["camera_frame"] = f"/runs/{run_id}/camera/frame"
 
     return {**result, "links": links}
 
@@ -167,25 +173,93 @@ def run_roads_live(run_id: str) -> FileResponse:
     return FileResponse(_recorded_artifact(run_id, recorded), media_type="application/geo+json")
 
 
-@app.post("/simulate")
-def simulate(req: SimulationRequest) -> dict:
+@app.get("/runs/{run_id}/camera/frame")
+def run_camera_frame(run_id: str) -> FileResponse:
+    stage = _run_dir(run_id) / "05_tfl"
+    candidates = sorted(stage.glob("camera_frame.*"))
+    if not candidates:
+        raise HTTPException(status_code=404, detail="camera frame not available")
+    frame = candidates[0]
+    media_type = "image/png" if frame.suffix.lower() == ".png" else "image/jpeg"
+    return FileResponse(frame, media_type=media_type)
+
+
+def _validate_simulation_request(req: SimulationRequest) -> None:
     if (req.lat is None) != (req.lon is None):
         raise HTTPException(status_code=400, detail="lat and lon must be provided together")
     if not req.address and req.lat is None:
         raise HTTPException(status_code=400, detail="provide address or lat/lon")
 
+
+def _pipeline_flags(req: SimulationRequest):
+    from .pipeline import PipelineFlags
+
+    return PipelineFlags(
+        skip_weather=req.skip_weather,
+        skip_tfl=req.skip_tfl,
+        skip_ai=req.skip_ai,
+        skip_noise=req.skip_noise,
+    )
+
+
+@app.post("/simulate/stream")
+def simulate_stream(req: SimulationRequest) -> StreamingResponse:
+    """NDJSON progress stream for the browser demo; /simulate remains unchanged."""
+    _validate_simulation_request(req)
+
+    def generate():
+        from .pipeline import Pipeline
+
+        events: queue.Queue[dict | None] = queue.Queue()
+
+        def emit(event: dict) -> None:
+            events.put({"type": "progress", **event})
+
+        def worker() -> None:
+            try:
+                result = Pipeline(settings).run(
+                    address=req.address,
+                    lat=req.lat,
+                    lon=req.lon,
+                    flags=_pipeline_flags(req),
+                    progress=emit,
+                )
+                events.put({"type": "result", "result": _decorate_result(result)})
+            except Exception as exc:
+                events.put({"type": "fatal", "error": repr(exc)})
+            finally:
+                events.put(None)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        while True:
+            item = events.get()
+            if item is None:
+                break
+            yield json.dumps(item, default=str) + "\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/simulate")
+def simulate(req: SimulationRequest) -> dict:
+    _validate_simulation_request(req)
+
     # Lazy import keeps /, /health and /preflight usable while fixing heavy/optional deps.
-    from .pipeline import Pipeline, PipelineFlags
+    from .pipeline import Pipeline
 
     result = Pipeline(settings).run(
         address=req.address,
         lat=req.lat,
         lon=req.lon,
-        flags=PipelineFlags(
-            skip_weather=req.skip_weather,
-            skip_tfl=req.skip_tfl,
-            skip_ai=req.skip_ai,
-            skip_noise=req.skip_noise,
-        ),
+        flags=_pipeline_flags(req),
     )
     return _decorate_result(result)
+

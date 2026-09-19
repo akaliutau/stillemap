@@ -7,6 +7,40 @@
   <link rel="preconnect" href="https://tiles.openfreemap.org" />
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" />
   <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    .pipeline-panel { padding: 14px 16px; }
+    .pipeline-title { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+    .pipeline-title h2 { margin:0; font-size:0.82rem; letter-spacing:.08em; text-transform:uppercase; }
+    .pipeline-live { font-size:.72rem; opacity:.65; }
+    .pipeline-list { list-style:none; padding:0; margin:0; display:grid; gap:0; }
+    .pipeline-step { position:relative; display:grid; grid-template-columns:20px 1fr; gap:9px; min-height:31px; align-items:start; color:#98a2b3; }
+    .pipeline-step:not(:last-child)::after { content:""; position:absolute; left:7px; top:17px; bottom:-1px; width:1px; background:rgba(152,162,179,.28); }
+    .pipeline-dot { position:relative; z-index:1; width:15px; height:15px; border-radius:50%; border:1px solid rgba(152,162,179,.55); background:#101828; margin-top:1px; display:grid; place-items:center; font-size:10px; line-height:1; }
+    .pipeline-copy { display:flex; justify-content:space-between; gap:8px; padding-bottom:9px; font-size:.78rem; line-height:1.25; }
+    .pipeline-detail { opacity:.62; text-align:right; font-size:.7rem; }
+    .pipeline-step.running { color:#f2f4f7; }
+    .pipeline-step.running .pipeline-dot { border-color:#53b1fd; box-shadow:0 0 0 4px rgba(83,177,253,.12); }
+    .pipeline-step.complete { color:#d1fadf; }
+    .pipeline-step.complete .pipeline-dot { color:#12b76a; border-color:#12b76a; background:rgba(18,183,106,.1); }
+    .pipeline-step.complete .pipeline-dot::before { content:"✓"; }
+    .pipeline-step.failed { color:#fda29b; }
+    .pipeline-step.failed .pipeline-dot { color:#f04438; border-color:#f04438; }
+    .pipeline-step.failed .pipeline-dot::before { content:"!"; }
+    .pipeline-step.skipped { opacity:.48; }
+    .pipeline-step.skipped .pipeline-dot::before { content:"–"; }
+    .camera-preview { position:absolute; z-index:8; top:16px; left:16px; width:min(300px,calc(100% - 32px)); overflow:hidden; border:1px solid rgba(255,255,255,.22); border-radius:14px; background:rgba(16,24,40,.92); box-shadow:0 14px 40px rgba(0,0,0,.28); backdrop-filter:blur(12px); }
+    .camera-preview.hidden { display:none; }
+    .camera-head { display:flex; justify-content:space-between; gap:10px; align-items:center; padding:8px 10px; font-size:.72rem; }
+    .camera-live { display:inline-flex; align-items:center; gap:6px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+    .camera-live::before { content:""; width:7px; height:7px; border-radius:50%; background:#f04438; box-shadow:0 0 0 3px rgba(240,68,56,.18); }
+    .camera-name { opacity:.7; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+    .camera-preview img { display:block; width:100%; aspect-ratio:16/9; object-fit:cover; background:#101828; }
+    .camera-foot { padding:7px 10px 9px; font-size:.7rem; opacity:.66; }
+    @media (max-width: 760px) {
+      .camera-preview { width:230px; top:10px; left:10px; }
+      .pipeline-detail { display:none; }
+    }
+  </style>
 </head>
 <body>
   <main class="app-shell">
@@ -38,6 +72,14 @@
           <strong id="status-text">Ready</strong>
         </div>
         <div id="run-id" class="muted small"></div>
+      </section>
+
+      <section id="pipeline-panel" class="panel pipeline-panel hidden">
+        <div class="pipeline-title">
+          <h2>Analyzing...</h2>
+          <span id="pipeline-live" class="pipeline-live">waiting</span>
+        </div>
+        <ol id="pipeline-list" class="pipeline-list"></ol>
       </section>
 
       <section id="metrics" class="metrics hidden">
@@ -79,6 +121,14 @@
     </aside>
 
     <section class="map-wrap">
+      <aside id="camera-preview" class="camera-preview hidden" aria-live="polite">
+        <div class="camera-head">
+          <span class="camera-live">TfL JamCam</span>
+          <span id="camera-name" class="camera-name">Camera</span>
+        </div>
+        <img id="camera-frame" alt="TfL JamCam frame used for the live traffic observation" />
+        <div id="camera-foot" class="camera-foot">Frame captured for Gemini traffic analysis</div>
+      </aside>
       <div id="map"></div>
       <div class="map-controls">
         <label><input id="scenario-baseline" name="scenario" type="radio" checked /> Baseline DEN</label>
@@ -100,3 +150,4 @@
   <script src="/static/app.js"></script>
 </body>
 </html>
+
