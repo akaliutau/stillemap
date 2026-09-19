@@ -37,6 +37,7 @@ class Settings:
     tfl_camera_radius_m: int
 
     dft_year: int
+    dft_year_lookback: int
     dft_region_name: str
     dft_page_size: int
     dft_nearby_radius_m: int
@@ -54,6 +55,7 @@ class Settings:
     noise_diff_horizontal: bool
     noise_diff_vertical: bool
     noise_map_period: str
+    noise_stats_floor_db: float
     noise_display_min_db: float
     noise_display_max_db: float
 
@@ -89,6 +91,7 @@ class Settings:
             tfl_app_key=os.getenv("TFL_APP_KEY") or None,
             tfl_camera_radius_m=_int("TFL_CAMERA_RADIUS_M", 1000),
             dft_year=_int("DFT_YEAR", 2025),
+            dft_year_lookback=_int("DFT_YEAR_LOOKBACK", 3),
             dft_region_name=os.getenv("DFT_REGION_NAME", "London"),
             dft_page_size=_int("DFT_PAGE_SIZE", 1000),
             dft_nearby_radius_m=_int("DFT_NEARBY_RADIUS_M", 1500),
@@ -104,8 +107,10 @@ class Settings:
             noise_diff_horizontal=_bool("NOISE_DIFF_HORIZONTAL", False),
             noise_diff_vertical=_bool("NOISE_DIFF_VERTICAL", False),
             noise_map_period=os.getenv("NOISE_MAP_PERIOD", "DEN").strip().upper(),
+            noise_stats_floor_db=_float("NOISE_STATS_FLOOR_DB", 20.0),
             noise_display_min_db=_float("NOISE_DISPLAY_MIN_DB", 35.0),
             noise_display_max_db=_float("NOISE_DISPLAY_MAX_DB", 80.0),
+
             traffic_day_share=_float("TRAFFIC_DAY_SHARE", 0.70),
             traffic_evening_share=_float("TRAFFIC_EVENING_SHARE", 0.20),
             traffic_night_share=_float("TRAFFIC_NIGHT_SHARE", 0.10),

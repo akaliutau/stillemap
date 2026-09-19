@@ -40,7 +40,7 @@ If image quality, occlusion, or camera angle makes a value uncertain, use null/u
 
     def explain_result(self, facts: dict) -> tuple[AIExplanation, str]:
         prompt = f"""
-Explain this acoustic simulation result for a hackathon UI using only the supplied JSON facts.
+Explain this acoustic simulation result using only the supplied JSON facts.
 Do not invent measurements. Clearly distinguish measured/public-source inputs, AI observations, and modelling assumptions.
 Keep the explanation useful to a London resident and include one caveat.
 

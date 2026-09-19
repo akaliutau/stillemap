@@ -193,7 +193,10 @@ def assign_traffic(
     simulation_roads = out.loc[valid_mask].copy()
     simulation_roads.reset_index(drop=True, inplace=True)
     # NoiseModelling requires source geometries to carry X/Y/Z coordinates.
-    simulation_roads["geometry"] = simulation_roads.geometry.apply(lambda geom: force_3d(geom, z=0.0))
+    # CNOSSOS road traffic emission height = 5 cm above ground.
+    simulation_roads["geometry"] = simulation_roads.geometry.apply(
+        lambda geom: force_3d(geom, z=0.05)
+    )
     simulation_roads["PK"] = np.arange(1, len(simulation_roads) + 1, dtype=int)
 
     debug = {

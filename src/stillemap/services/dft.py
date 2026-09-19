@@ -6,6 +6,24 @@ from ..config import Settings
 from .tfl import haversine_m
 
 
+def quality(row: dict) -> tuple[int, int]:
+    """
+    Higher is better:
+    1. Counted > Estimated
+    2. newer year > older year
+    """
+    counted = (
+        1
+        if str(row.get("estimation_method", "")).lower() == "counted"
+        else 0
+    )
+
+    year = int(row.get("year") or 0)
+
+    return counted, year
+
+
+
 class DfTService:
     BASE = "https://roadtraffic.dft.gov.uk/api"
 
@@ -29,30 +47,48 @@ class DfTService:
                 return int(item["id"]), payload
         return None, payload
 
-    def london_aadf_pages(self, region_id: int) -> tuple[list[dict], list[dict]]:
+    def london_aadf_pages(
+            self,
+            region_id: int,
+    ) -> tuple[list[dict], list[dict]]:
         rows: list[dict] = []
         pages: list[dict] = []
-        page_number = 1
-        while True:
-            response = self.session.get(
-                f"{self.BASE}/average-annual-daily-flow",
-                params={
-                    "filter[region_id]": region_id,
-                    "filter[year]": self.settings.dft_year,
-                    "page[size]": self.settings.dft_page_size,
-                    "page[number]": page_number,
-                },
-                headers=self.headers,
-                timeout=self.settings.http_timeout_sec,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            pages.append(payload)
-            rows.extend(payload.get("data") or [])
-            if not payload.get("next_page_url"):
-                break
-            page_number += 1
+
+        min_year = self.settings.dft_year - self.settings.dft_year_lookback
+
+        for year in range(self.settings.dft_year, min_year - 1, -1):
+            page_number = 1
+
+            while True:
+                response = self.session.get(
+                    f"{self.BASE}/average-annual-daily-flow",
+                    params={
+                        "filter[region_id]": region_id,
+                        "filter[year]": year,
+                        "page[size]": self.settings.dft_page_size,
+                        "page[number]": page_number,
+                    },
+                    headers=self.headers,
+                    timeout=self.settings.http_timeout_sec,
+                )
+                response.raise_for_status()
+
+                payload = response.json()
+
+                pages.append({
+                    "year": year,
+                    "payload": payload,
+                })
+
+                rows.extend(payload.get("data") or [])
+
+                if not payload.get("next_page_url"):
+                    break
+
+                page_number += 1
+
         return rows, pages
+
 
     def nearby_aadf(self, lat: float, lon: float) -> tuple[list[dict], dict]:
         region_id, region_payload = self.region_id()
@@ -71,6 +107,16 @@ class DfTService:
                 item = dict(row)
                 item["distance_m"] = round(dist, 2)
                 nearby.append(item)
-        nearby.sort(key=lambda x: x["distance_m"])
-        nearby = nearby[: self.settings.dft_max_points]
+
+        best_by_count_point: dict[str, dict] = {}
+
+        for item in nearby:
+            count_id = str(item.get("count_point_id"))
+            current = best_by_count_point.get(count_id)
+            if current is None or quality(item) > quality(current):
+                best_by_count_point[count_id] = item
+
+        nearby = list(best_by_count_point.values())
         return nearby, {"region": region_payload, "pages": pages}
+
+
