@@ -36,22 +36,57 @@ Cloud Run deployment is intentionally two-step: `scripts/deploy_infra.sh` once, 
 ```bash
 cp .env.example .env
 
+git clone https://github.com/akaliutau/stillemap.git
+cd stillemap
+
+conda create -n stillemap python=3.12 -y
+conda activate stillemap
+
 pip install -r requirements.txt
 ```
+If credentials come from `gcloud auth application-default login` or the eventual GCP runtime, 
+`GOOGLE_APPLICATION_CREDENTIALS` may be blank; ADC is then used.
+
+```bash
+gcloud auth login
+gcloud auth application-default login
+gcloud auth application-default set-quota-project lon-agentic26lon-9268
+```
+
+```bash
+gcloud config set project lon-agentic26lon-9268
+gcloud services enable \
+  geocoding-backend.googleapis.com \
+  weather.googleapis.com
+```
+
+Google Cloud Console
+-> APIs & Services
+-> Credentials
+-> Create credentials
+-> API key
+
+Then restrict the key `GOOGLE_MAPS_API_KEY` to just:
+
+```text
+Geocoding API
+Weather API
+```
+
+
+and copy the value to `GOOGLE_MAPS_API_KEY` in `.env` 
 
 Populate `.env`. The intended hackathon setup is Vertex AI:
 
 ```dotenv
 GOOGLE_GENAI_USE_VERTEXAI=true
-GOOGLE_CLOUD_PROJECT=your-project
+GOOGLE_CLOUD_PROJECT=lon-agentic26lon-9268
 GOOGLE_CLOUD_LOCATION=global
 GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/service-account.json
 GOOGLE_MAPS_API_KEY=...
 TFL_APP_KEY=...
 ```
 
-If credentials come from `gcloud auth application-default login` or the eventual GCP runtime, 
-`GOOGLE_APPLICATION_CREDENTIALS` may be blank; ADC is then used.
 
 ### GCP deploy
 

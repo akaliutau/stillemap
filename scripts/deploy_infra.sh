@@ -48,10 +48,11 @@ fi
 sleep 5
 
 # Gemini through Vertex AI uses Cloud Run service identity / ADC.
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-  --member="serviceAccount:${SA}" \
-  --role="roles/aiplatform.user" \
-  --condition=None >/dev/null
+# Inherit the managed account settings for XXX@gcplab.me
+# gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+#   --member="serviceAccount:${SA}" \
+#   --role="roles/aiplatform.user" \
+#   --condition=None >/dev/null
 
 # Cloud Build's default service account changed for newer projects. Ask GCP which
 # identity is actually used, then grant that identity permission to push images.
@@ -61,11 +62,12 @@ BUILD_SA="$(gcloud builds get-default-service-account \
 BUILD_SA="${BUILD_SA##*/}"
 if [[ -n "$BUILD_SA" ]]; then
   printf '[infra] Cloud Build service account: %s\n' "$BUILD_SA"
-  gcloud artifacts repositories add-iam-policy-binding "$REPOSITORY" \
-    --location="$REGION" \
-    --project="$PROJECT_ID" \
-    --member="serviceAccount:${BUILD_SA}" \
-    --role="roles/artifactregistry.writer" >/dev/null
+#  Inherit the managed account settings for XXX@gcplab.me
+#  gcloud artifacts repositories add-iam-policy-binding "$REPOSITORY" \
+#    --location="$REGION" \
+#    --project="$PROJECT_ID" \
+#    --member="serviceAccount:${BUILD_SA}" \
+#    --role="roles/artifactregistry.writer" >/dev/null
 else
   printf '[infra] WARNING: could not resolve Cloud Build default service account; first build may need IAM adjustment\n' >&2
 fi
