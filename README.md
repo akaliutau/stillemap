@@ -319,18 +319,20 @@ For the demo, run artifacts needed by the browser are streamed back in the same 
 
 ## 🧩 Stack
 
-| Layer | Technology |
-|---|---|
-| UI | MapLibre GL JS |
-| API | FastAPI |
-| Geospatial | GeoPandas, Shapely, GDAL |
-| City geometry | OpenStreetMap / Geofabrik |
-| Traffic | UK Department for Transport |
-| Live street context | TfL JamCams |
-| Multimodal AI | Gemini |
-| Acoustic engine | NoiseModelling 6.0 |
-| Acoustic method | CNOSSOS |
-| Cloud | Google Cloud Run |
+| Layer               | Technology                  |
+|---------------------|-----------------------------|
+| UI                  | MapLibre GL JS              |
+| API                 | FastAPI                     |
+| Geospatial          | GeoPandas, Shapely, GDAL    |
+| City geometry       | OpenStreetMap / Geofabrik   |
+| Traffic             | UK Department for Transport |
+| Live street context | TfL JamCams                 |
+| Multimodal AI       | Gemini                      |
+| Acoustic engine     | NoiseModelling 6.0          |
+| Acoustic method     | CNOSSOS                     |
+| Cloud               | Google Cloud Run            |
+
+The full list of external APIs used in project can be found [here](EXTERNAL_API.md)
 
 ---
 
