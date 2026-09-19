@@ -14,14 +14,13 @@ from .config import Settings
 from .models import CameraObservation
 
 
-
-
 def first_tag(value: Any) -> str | None:
     if value is None:
         return None
     if isinstance(value, list):
         return str(value[0]) if value else None
     return str(value)
+
 
 REQUIRED_TRAFFIC_FIELDS = [
     "LV_D", "LV_E", "LV_N", "HGV_D", "HGV_E", "HGV_N",
@@ -93,8 +92,8 @@ def dft_to_hourly_fields(row: dict, settings: Settings) -> dict[str, float | Non
 def ai_adjustment(observation: CameraObservation | None, min_confidence: float) -> tuple[float, float] | None:
     """Return (flow multiplier, speed multiplier), or None.
 
-    This is deliberately a tiny, explicit translation layer. Gemini provides semantic
-    observations; deterministic code maps those observations to a conservative scenario.
+    Gemini supplies only semantic observations. Deterministic code translates them
+    into a deliberately small scenario adjustment.
     """
     if observation is None or observation.confidence < min_confidence:
         return None
@@ -120,7 +119,15 @@ def assign_traffic(
     nearby_dft: list[dict],
     settings: Settings,
     camera_observation: CameraObservation | None = None,
+    *,
+    live_period: str | None = None,
 ) -> tuple[gpd.GeoDataFrame, dict]:
+    """Attach CNOSSOS traffic fields to OSM roads.
+
+    Baseline calls pass camera_observation=None. A live scenario passes a camera
+    observation and one current D/E/N period; the AI multiplier is applied only to
+    that period, so the camera never contaminates baseline DEN traffic.
+    """
     out = roads.copy()
     for field in REQUIRED_TRAFFIC_FIELDS:
         out[field] = np.nan
@@ -139,7 +146,15 @@ def assign_traffic(
         except Exception:
             continue
 
-    ai_mult = ai_adjustment(camera_observation, settings.ai_min_confidence) if settings.ai_live_traffic_enabled else None
+    period = live_period.upper() if live_period else None
+    if period not in {None, "D", "E", "N"}:
+        raise ValueError(f"live_period must be D/E/N, got {live_period!r}")
+
+    ai_mult = (
+        ai_adjustment(camera_observation, settings.ai_min_confidence)
+        if settings.ai_live_traffic_enabled and camera_observation is not None and period is not None
+        else None
+    )
 
     matched = 0
     for idx, road in out.iterrows():
@@ -159,16 +174,16 @@ def assign_traffic(
         flows = dft_to_hourly_fields(dft, settings)
         speed = parse_speed_kph(road.get("maxspeed"))
         values: dict[str, float | None] = {**flows}
-        for period in ("D", "E", "N"):
-            values[f"LV_SPD_{period}"] = speed
-            values[f"HGV_SPD_{period}"] = speed
+        for p in ("D", "E", "N"):
+            values[f"LV_SPD_{p}"] = speed
+            values[f"HGV_SPD_{p}"] = speed
 
-        if ai_mult is not None:
+        if ai_mult is not None and period is not None:
             flow_mult, speed_mult = ai_mult
-            for field in ("LV_D", "LV_E", "LV_N", "HGV_D", "HGV_E", "HGV_N"):
+            for field in (f"LV_{period}", f"HGV_{period}"):
                 if values[field] is not None:
                     values[field] = float(values[field]) * flow_mult
-            for field in ("LV_SPD_D", "LV_SPD_E", "LV_SPD_N", "HGV_SPD_D", "HGV_SPD_E", "HGV_SPD_N"):
+            for field in (f"LV_SPD_{period}", f"HGV_SPD_{period}"):
                 if values[field] is not None:
                     values[field] = float(values[field]) * speed_mult
 
@@ -179,7 +194,8 @@ def assign_traffic(
         out.at[idx, "TRAF_SRC"] = "dft+jamcam_ai" if ai_mult is not None else "dft"
         matched += 1
 
-    # Explicit missing-data policy. No hard-coded traffic class fallback.
+    # Explicit application policy. No hard-coded London traffic fallback: averages
+    # are derived only from valid road observations present in this run.
     before_policy = len(out)
     if settings.traffic_missing_policy == "average":
         means = {f: pd.to_numeric(out[f], errors="coerce").mean() for f in REQUIRED_TRAFFIC_FIELDS}
@@ -192,8 +208,8 @@ def assign_traffic(
     valid_mask = out[REQUIRED_TRAFFIC_FIELDS].notna().all(axis=1)
     simulation_roads = out.loc[valid_mask].copy()
     simulation_roads.reset_index(drop=True, inplace=True)
-    # NoiseModelling requires source geometries to carry X/Y/Z coordinates.
-    # CNOSSOS road traffic emission height = 5 cm above ground.
+
+    # NoiseModelling requires XYZ source geometry. CNOSSOS road source height = 5 cm.
     simulation_roads["geometry"] = simulation_roads.geometry.apply(
         lambda geom: force_3d(geom, z=0.05)
     )
@@ -206,6 +222,10 @@ def assign_traffic(
         "missing_policy": settings.traffic_missing_policy,
         "simulation_roads": len(simulation_roads),
         "roads_skipped": before_policy - len(simulation_roads),
-        "ai_adjustment": None if ai_mult is None else {"flow_multiplier": ai_mult[0], "speed_multiplier": ai_mult[1]},
+        "ai_adjusted_period": period if ai_mult is not None else None,
+        "ai_adjustment": None if ai_mult is None else {
+            "flow_multiplier": ai_mult[0],
+            "speed_multiplier": ai_mult[1],
+        },
     }
     return simulation_roads, debug

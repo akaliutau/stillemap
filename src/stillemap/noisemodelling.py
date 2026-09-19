@@ -21,17 +21,24 @@ class NoiseModellingRunner:
     def _wrap(self, run_root: Path, inner: list[str]) -> list[str]:
         if self.settings.nm_mode == "local":
             home = Path(self.settings.nm_local_home or "").resolve()
-            translated = []
-            for arg in inner:
-                translated.append(arg.replace("/opt/noisemodelling", str(home)).replace("/work", str(run_root)))
-            return translated
+            return [
+                arg.replace("/opt/noisemodelling", str(home)).replace("/work", str(run_root))
+                for arg in inner
+            ]
         docker = ["sudo", "docker"] if self.settings.nm_docker_sudo else ["docker"]
         return [
-            *docker, "run", "--rm",
-            "-v", f"{run_root}:/work",
+            *docker,
+            "run",
+            "--rm",
+            "-v",
+            f"{run_root}:/work",
             self.settings.nm_docker_image,
             *inner,
         ]
+
+    @staticmethod
+    def _work_path(run_root: Path, path: Path) -> str:
+        return "/work/" + path.resolve().relative_to(run_root.resolve()).as_posix()
 
     def _run(self, run_root: Path, cmd: list[str], log_file: Path) -> None:
         full = self._wrap(run_root, cmd)
@@ -53,43 +60,90 @@ class NoiseModellingRunner:
         if proc.returncode != 0:
             raise RuntimeError(f"NoiseModelling command failed rc={proc.returncode}; see {log_file}")
 
-    def run(self, run_root: Path, prepare_dir: Path, nm_dir: Path, weather: dict | None = None) -> Path:
+    def run(
+        self,
+        run_root: Path,
+        prepare_dir: Path,
+        nm_dir: Path,
+        *,
+        roads_filename: str,
+        weather: dict | None = None,
+    ) -> Path:
+        """Run one independent NoiseModelling scenario.
+
+        Each scenario gets its own H2GIS workspace, which makes baseline and live
+        runs completely isolated while reusing the same buildings/receivers.
+        """
         workspace = nm_dir / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
         scripts = "/opt/noisemodelling/scripts"
         runner = "/opt/noisemodelling/bin/ScriptRunner"
-        work_workspace = "/work/08_noisemodelling/workspace"
+        work_workspace = self._work_path(run_root, workspace)
 
-        for table in ("BUILDINGS", "ROADS", "RECEIVERS"):
-            input_file = f"/work/07_prepare/{table}.geojson"
+        imports = (
+            ("BUILDINGS", "BUILDINGS.geojson"),
+            ("ROADS", roads_filename),
+            ("RECEIVERS", "RECEIVERS.geojson"),
+        )
+        for table, filename in imports:
+            local_file = prepare_dir / filename
+            input_file = self._work_path(run_root, local_file)
             self._run(
                 run_root,
-                [runner, "-w", work_workspace, "-s", f"{scripts}/Import_and_Export/Import_File.groovy",
-                 "--pathFile", input_file, "--tableName", table, "--ifTableExists", "Overwrite"],
+                [
+                    runner,
+                    "-w",
+                    work_workspace,
+                    "-s",
+                    f"{scripts}/Import_and_Export/Import_File.groovy",
+                    "--pathFile",
+                    input_file,
+                    "--tableName",
+                    table,
+                    "--ifTableExists",
+                    "Overwrite",
+                ],
                 nm_dir / f"import_{table.lower()}.log",
             )
 
         calc = [
-            runner, "-w", work_workspace,
-            "-s", f"{scripts}/NoiseModelling/Noise_level_from_traffic.groovy",
-            "--tableBuilding", "BUILDINGS",
-            "--tableRoads", "ROADS",
-            "--tableReceivers", "RECEIVERS",
-            "--confMaxSrcDist", str(self.settings.noise_max_source_distance_m),
-            "--confReflOrder", str(self.settings.noise_reflection_order),
-            "--confDiffHorizontal", str(self.settings.noise_diff_horizontal).lower(),
-            "--confDiffVertical", str(self.settings.noise_diff_vertical).lower(),
+            runner,
+            "-w",
+            work_workspace,
+            "-s",
+            f"{scripts}/NoiseModelling/Noise_level_from_traffic.groovy",
+            "--tableBuilding",
+            "BUILDINGS",
+            "--tableRoads",
+            "ROADS",
+            "--tableReceivers",
+            "RECEIVERS",
+            "--confMaxSrcDist",
+            str(self.settings.noise_max_source_distance_m),
+            "--confReflOrder",
+            str(self.settings.noise_reflection_order),
+            "--confDiffHorizontal",
+            str(self.settings.noise_diff_horizontal).lower(),
+            "--confDiffVertical",
+            str(self.settings.noise_diff_vertical).lower(),
         ]
-        # Weather is collected and reported, but not injected here unless the traffic script's
-        # CLI contract is verified for the pinned image. This avoids guessing unsupported args.
+        # Weather stays provenance-only for now; we do not guess unsupported CLI args.
         self._run(run_root, calc, nm_dir / "calculate.log")
 
         output = nm_dir / "RECEIVERS_LEVEL.geojson"
         self._run(
             run_root,
-            [runner, "-w", work_workspace, "-s", f"{scripts}/Import_and_Export/Export_Table.groovy",
-             "--exportPath", "/work/08_noisemodelling/RECEIVERS_LEVEL.geojson",
-             "--tableToExport", "RECEIVERS_LEVEL"],
+            [
+                runner,
+                "-w",
+                work_workspace,
+                "-s",
+                f"{scripts}/Import_and_Export/Export_Table.groovy",
+                "--exportPath",
+                self._work_path(run_root, output),
+                "--tableToExport",
+                "RECEIVERS_LEVEL",
+            ],
             nm_dir / "export.log",
         )
         if not output.exists():
@@ -112,14 +166,14 @@ def load_noise_summary(
     *,
     target_epsg: int = 27700,
     period: str = "DEN",
+    stats_floor_db: float = 20.0,
     display_min_db: float = 35.0,
     display_max_db: float = 80.0,
 ) -> dict:
-    """Build browser-ready noise output and period-correct summary.
+    """Create one period-correct browser heatmap and summary from NoiseModelling.
 
-    NoiseModelling's RECEIVERS_LEVEL contains one row per receiver *per period*.
-    We keep the raw export untouched, select one requested period for the map,
-    convert it to WGS84, and add a normalized DISPLAY_WEIGHT used only by the UI.
+    Raw RECEIVERS_LEVEL is untouched. Extremely low numerical values are retained as
+    NOISE_DB but excluded from user-facing statistics and hidden by the map layers.
     """
     gdf = gpd.read_file(path)
     raw_feature_count = len(gdf)
@@ -150,42 +204,60 @@ def load_noise_summary(
 
     levels = selected[level_field].astype(float)
     selected["NOISE_DB"] = levels
+    selected["HAS_MODELLED_CONTRIBUTION"] = levels >= stats_floor_db
     selected["DISPLAY_DB"] = levels.clip(lower=display_min_db, upper=display_max_db)
     span = display_max_db - display_min_db
     selected["DISPLAY_WEIGHT"] = ((selected["DISPLAY_DB"] - display_min_db) / span).clip(0.0, 1.0)
+    selected.loc[~selected["HAS_MODELLED_CONTRIBUTION"], "DISPLAY_WEIGHT"] = 0.0
 
     center = gpd.GeoSeries([Point(center_lon, center_lat)], crs=4326).to_crs(selected.crs).iloc[0]
     nearest_idx = selected.geometry.distance(center).idxmin()
     nearest = selected.loc[nearest_idx]
-    center_db = float(nearest[level_field])
+    center_db_raw = float(nearest[level_field])
+    center_has_contribution = bool(center_db_raw >= stats_floor_db)
     center_distance_m = float(nearest.geometry.distance(center))
 
     browser = selected.to_crs(4326).copy()
     browser["geometry"] = browser.geometry.apply(force_2d)
-
     receiver_id = _column(browser, ("IDRECEIVER", "RECEIVER_ID", "PK", "ID"))
-    keep = [c for c in (receiver_id, period_col, level_field, "NOISE_DB", "DISPLAY_DB", "DISPLAY_WEIGHT") if c and c in browser.columns]
-    # Preserve order while removing aliases that resolve to the same column.
+    keep = [
+        c
+        for c in (
+            receiver_id,
+            period_col,
+            level_field,
+            "NOISE_DB",
+            "HAS_MODELLED_CONTRIBUTION",
+            "DISPLAY_DB",
+            "DISPLAY_WEIGHT",
+        )
+        if c and c in browser.columns
+    ]
     keep = list(dict.fromkeys(keep))
     browser = browser[[*keep, "geometry"]]
 
     map_path = path.parent / f"RECEIVERS_{selected_period or period.upper()}_WGS84.geojson"
     browser.to_file(map_path, driver="GeoJSON")
 
-    values = levels.to_numpy(dtype=float)
+    valid = levels[levels >= stats_floor_db]
     return {
         "raw_feature_count": raw_feature_count,
         "receiver_count": len(selected),
-        "period": selected_period,
+        "modelled_receiver_count": int((levels >= stats_floor_db).sum()),
+        "no_contribution_receiver_count": int((levels < stats_floor_db).sum()),
+        "period": selected_period or period.upper(),
         "period_field": period_col,
         "level_field": level_field,
-        "min_db": float(np.min(values)),
-        "max_db": float(np.max(values)),
-        "mean_db": float(np.mean(values)),
-        "median_db": float(np.median(values)),
-        "p95_db": float(np.percentile(values, 95)),
-        "center_db": center_db,
+        "min_db": float(valid.min()) if len(valid) else None,
+        "max_db": float(valid.max()) if len(valid) else None,
+        "mean_db": float(valid.mean()) if len(valid) else None,
+        "median_db": float(valid.median()) if len(valid) else None,
+        "p95_db": float(np.percentile(valid.to_numpy(dtype=float), 95)) if len(valid) else None,
+        "center_db_raw": center_db_raw,
+        "center_db": center_db_raw if center_has_contribution else None,
+        "center_status": "modelled" if center_has_contribution else "no_modelled_road_contribution",
         "center_receiver_distance_m": round(center_distance_m, 2),
+        "stats_floor_db": stats_floor_db,
         "below_display_floor": int((levels < display_min_db).sum()),
         "display_min_db": display_min_db,
         "display_max_db": display_max_db,

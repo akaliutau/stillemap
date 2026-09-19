@@ -102,15 +102,14 @@ class Settings:
             receiver_grid_m=_int("RECEIVER_GRID_M", 25),
             receiver_height_m=_float("RECEIVER_HEIGHT_M", 4.0),
             target_epsg=_int("TARGET_EPSG", 27700),
-            noise_max_source_distance_m=_int("NOISE_MAX_SOURCE_DISTANCE_M", 300),
+            noise_max_source_distance_m=_int("NOISE_MAX_SOURCE_DISTANCE_M", 450),
             noise_reflection_order=_int("NOISE_REFLECTION_ORDER", 0),
-            noise_diff_horizontal=_bool("NOISE_DIFF_HORIZONTAL", False),
+            noise_diff_horizontal=_bool("NOISE_DIFF_HORIZONTAL", True),
             noise_diff_vertical=_bool("NOISE_DIFF_VERTICAL", False),
             noise_map_period=os.getenv("NOISE_MAP_PERIOD", "DEN").strip().upper(),
             noise_stats_floor_db=_float("NOISE_STATS_FLOOR_DB", 20.0),
             noise_display_min_db=_float("NOISE_DISPLAY_MIN_DB", 35.0),
             noise_display_max_db=_float("NOISE_DISPLAY_MAX_DB", 80.0),
-
             traffic_day_share=_float("TRAFFIC_DAY_SHARE", 0.70),
             traffic_evening_share=_float("TRAFFIC_EVENING_SHARE", 0.20),
             traffic_night_share=_float("TRAFFIC_NIGHT_SHARE", 0.10),
@@ -138,5 +137,9 @@ class Settings:
             raise ValueError("TRAFFIC_MISSING_POLICY must be 'skip' or 'average'")
         if self.nm_mode not in {"docker", "local"}:
             raise ValueError("NM_MODE must be 'docker' or 'local'")
+        if self.dft_year_lookback < 0:
+            raise ValueError("DFT_YEAR_LOOKBACK must be >= 0")
+        if self.noise_stats_floor_db >= self.noise_display_max_db:
+            raise ValueError("NOISE_STATS_FLOOR_DB must be lower than NOISE_DISPLAY_MAX_DB")
         if self.noise_display_max_db <= self.noise_display_min_db:
             raise ValueError("NOISE_DISPLAY_MAX_DB must be greater than NOISE_DISPLAY_MIN_DB")

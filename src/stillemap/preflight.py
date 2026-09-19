@@ -67,7 +67,13 @@ def run_preflight(settings: Settings) -> dict:
             "gemini_model": settings.gemini_model,
             "vertex_ai": settings.google_genai_use_vertexai,
             "target_epsg": settings.target_epsg,
+            "dft_year": settings.dft_year,
+            "dft_year_lookback": settings.dft_year_lookback,
             "traffic_missing_policy": settings.traffic_missing_policy,
+            "noise_max_source_distance_m": settings.noise_max_source_distance_m,
+            "noise_diff_horizontal": settings.noise_diff_horizontal,
+            "noise_diff_vertical": settings.noise_diff_vertical,
+            "noise_stats_floor_db": settings.noise_stats_floor_db,
             "nm_mode": settings.nm_mode,
         },
     }

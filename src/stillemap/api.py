@@ -13,7 +13,7 @@ from .preflight import run_preflight
 
 # .env is loaded exactly once at process start.
 settings = Settings.load(".env")
-app = FastAPI(title="StilleMap", version="0.2.0")
+app = FastAPI(title="StilleMap", version="0.3.0")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -47,19 +47,43 @@ def _file(run_id: str, relative: str) -> Path:
     return candidate
 
 
+def _recorded_artifact(run_id: str, recorded_path: str | None) -> Path:
+    if not recorded_path:
+        raise HTTPException(status_code=404, detail="artifact not available for this run")
+    run = _run_dir(run_id)
+    candidate = Path(recorded_path).resolve()
+    if run not in candidate.parents or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="artifact not found")
+    return candidate
+
+
+def _read_result(run_id: str) -> dict:
+    return json.loads(_file(run_id, "result.json").read_text(encoding="utf-8"))
+
+
 def _decorate_result(result: dict) -> dict:
     run_id = result.get("run_id")
     if not run_id:
         return result
-    links: dict[str, str] = {
-        "result": f"/runs/{run_id}/result.json",
-    }
+
+    links: dict[str, str] = {"result": f"/runs/{run_id}/result.json"}
     noise = result.get("noise") or {}
-    if noise.get("map_geojson_path"):
-        links["noise_geojson"] = f"/runs/{run_id}/noise.geojson"
+    baseline = noise.get("baseline") or {}
+    live = noise.get("live") or {}
     prepare = result.get("prepare") or {}
+
+    if baseline.get("map_geojson_path"):
+        links["baseline_noise_geojson"] = f"/runs/{run_id}/noise/baseline.geojson"
+        # Backward-compatible alias: the primary map remains the DEN baseline heatmap.
+        links["noise_geojson"] = links["baseline_noise_geojson"]
+    if live.get("map_geojson_path"):
+        links["live_noise_geojson"] = f"/runs/{run_id}/noise/live.geojson"
     if prepare.get("road_map_geojson_path"):
-        links["roads_geojson"] = f"/runs/{run_id}/roads.geojson"
+        links["baseline_roads_geojson"] = f"/runs/{run_id}/roads/baseline.geojson"
+        links["roads_geojson"] = links["baseline_roads_geojson"]
+    if prepare.get("live_road_map_geojson_path"):
+        links["live_roads_geojson"] = f"/runs/{run_id}/roads/live.geojson"
+
     return {**result, "links": links}
 
 
@@ -84,31 +108,63 @@ def list_runs(limit: int = 20) -> dict:
     items = []
     for run in sorted((p for p in settings.runs_dir.iterdir() if p.is_dir()), reverse=True)[: max(1, min(limit, 100))]:
         result_path = run / "result.json"
-        noise_path = run / "08_noisemodelling" / f"RECEIVERS_{settings.noise_map_period}_WGS84.geojson"
-        items.append({
-            "run_id": run.name,
-            "result_url": f"/runs/{run.name}/result.json" if result_path.exists() else None,
-            "noise_url": f"/runs/{run.name}/noise.geojson" if noise_path.exists() else None,
-        })
+        if result_path.exists():
+            try:
+                result = _decorate_result(json.loads(result_path.read_text(encoding="utf-8")))
+                items.append({
+                    "run_id": run.name,
+                    "result_url": result.get("links", {}).get("result"),
+                    "baseline_noise_url": result.get("links", {}).get("baseline_noise_geojson"),
+                    "live_noise_url": result.get("links", {}).get("live_noise_geojson"),
+                })
+                continue
+            except Exception:
+                pass
+        items.append({"run_id": run.name, "result_url": None, "baseline_noise_url": None, "live_noise_url": None})
     return {"runs": items}
 
 
 @app.get("/runs/{run_id}/result.json")
 def run_result(run_id: str) -> dict:
-    path = _file(run_id, "result.json")
-    return _decorate_result(json.loads(path.read_text(encoding="utf-8")))
+    return _decorate_result(_read_result(run_id))
 
 
 @app.get("/runs/{run_id}/noise.geojson")
-def run_noise(run_id: str) -> FileResponse:
-    path = _file(run_id, f"08_noisemodelling/RECEIVERS_{settings.noise_map_period}_WGS84.geojson")
-    return FileResponse(path, media_type="application/geo+json")
+def run_noise_compat(run_id: str) -> FileResponse:
+    return run_noise_baseline(run_id)
+
+
+@app.get("/runs/{run_id}/noise/baseline.geojson")
+def run_noise_baseline(run_id: str) -> FileResponse:
+    result = _read_result(run_id)
+    recorded = (((result.get("noise") or {}).get("baseline") or {}).get("map_geojson_path"))
+    return FileResponse(_recorded_artifact(run_id, recorded), media_type="application/geo+json")
+
+
+@app.get("/runs/{run_id}/noise/live.geojson")
+def run_noise_live(run_id: str) -> FileResponse:
+    result = _read_result(run_id)
+    recorded = (((result.get("noise") or {}).get("live") or {}).get("map_geojson_path"))
+    return FileResponse(_recorded_artifact(run_id, recorded), media_type="application/geo+json")
 
 
 @app.get("/runs/{run_id}/roads.geojson")
-def run_roads(run_id: str) -> FileResponse:
-    path = _file(run_id, "07_prepare/ROADS_WGS84.geojson")
-    return FileResponse(path, media_type="application/geo+json")
+def run_roads_compat(run_id: str) -> FileResponse:
+    return run_roads_baseline(run_id)
+
+
+@app.get("/runs/{run_id}/roads/baseline.geojson")
+def run_roads_baseline(run_id: str) -> FileResponse:
+    result = _read_result(run_id)
+    recorded = ((result.get("prepare") or {}).get("road_map_geojson_path"))
+    return FileResponse(_recorded_artifact(run_id, recorded), media_type="application/geo+json")
+
+
+@app.get("/runs/{run_id}/roads/live.geojson")
+def run_roads_live(run_id: str) -> FileResponse:
+    result = _read_result(run_id)
+    recorded = ((result.get("prepare") or {}).get("live_road_map_geojson_path"))
+    return FileResponse(_recorded_artifact(run_id, recorded), media_type="application/geo+json")
 
 
 @app.post("/simulate")

@@ -42,7 +42,7 @@
 
       <section id="metrics" class="metrics hidden">
         <article class="metric primary">
-          <span>At selected location</span>
+          <span id="metric-scenario-label">Baseline DEN at selected location</span>
           <strong id="metric-center">—</strong>
           <small id="metric-center-distance"></small>
         </article>
@@ -55,7 +55,7 @@
           <strong id="metric-p95">—</strong>
         </article>
         <article class="metric">
-          <span>Receivers</span>
+          <span>Modelled receivers</span>
           <strong id="metric-receivers">—</strong>
         </article>
       </section>
@@ -81,6 +81,8 @@
     <section class="map-wrap">
       <div id="map"></div>
       <div class="map-controls">
+        <label><input id="scenario-baseline" name="scenario" type="radio" checked /> Baseline DEN</label>
+        <label><input id="scenario-live" name="scenario" type="radio" disabled /> Live scenario</label>
         <label><input id="heat-toggle" type="checkbox" checked /> Heatmap</label>
         <label><input id="points-toggle" type="checkbox" checked /> Receivers</label>
         <label><input id="roads-toggle" type="checkbox" checked /> Modelled roads</label>
@@ -89,7 +91,7 @@
         <div class="legend-title"><span id="legend-period">DEN</span> noise level</div>
         <div class="legend-bar"></div>
         <div class="legend-labels"><span>35 dB</span><span>55</span><span>65</span><span>75</span><span>80+ dB</span></div>
-        <div class="legend-note">Display floor only; raw values remain in artifacts.</div>
+        <div class="legend-note">Heatmap hides numerical no-contribution receivers; raw NoiseModelling values remain in run artifacts.</div>
       </div>
     </section>
   </main>

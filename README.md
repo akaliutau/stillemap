@@ -1,4 +1,3 @@
-
 A deliberately small hackathon implementation for turning a London address into a staged acoustic-model run.
 
 The pipeline is designed for **debugging under time pressure**:
@@ -21,12 +20,13 @@ address or lat/lon
   +-- 01 Google Geocoding v4
   +-- 02 Google Weather API
   +-- 03 OSM / Overpass: buildings + drive network
-  +-- 04 DfT: London AADF -> local nearby observations
+  +-- 04 DfT: London AADF -> best nearby Counted/latest observations
   +-- 05 TfL: nearest JamCam + still image
   +-- 06 Gemini: structured visual traffic observation
-  +-- 07 prepare: BUILDINGS / ROADS / RECEIVERS GeoJSON
-  +-- 08 NoiseModelling 6.0.0: H2GIS + CNOSSOS
-  +-- 09 Gemini: grounded user-facing explanation
+  +-- 07 prepare: BUILDINGS / baseline ROADS / optional live ROADS / RECEIVERS
+  +-- 08 NoiseModelling baseline: CNOSSOS -> DEN heatmap
+  +-- 09 NoiseModelling live: CNOSSOS -> current D/E/N heatmap (when AI observation is usable)
+  +-- 10 Gemini: grounded explanation of baseline + live scenario
 ```
 
 Cloud Run deployment is intentionally two-step: `scripts/deploy_infra.sh` once, then `scripts/deploy_service.sh` for each build/redeploy.
@@ -252,6 +252,7 @@ runs/20260918T..._10-downing-street-london/
 │   └── roads_raw.geojson
 ├── 04_dft/
 │   ├── region.json
+│   ├── selection.json
 │   ├── raw_pages/
 │   └── nearby.json
 ├── 05_tfl/
@@ -263,17 +264,25 @@ runs/20260918T..._10-downing-street-london/
 │   └── observation.json
 ├── 07_prepare/
 │   ├── BUILDINGS.geojson
-│   ├── ROADS.geojson
+│   ├── ROADS_BASELINE.geojson
+│   ├── ROADS_BASELINE_WGS84.geojson
+│   ├── ROADS_LIVE.geojson              # optional
+│   ├── ROADS_LIVE_WGS84.geojson        # optional
 │   ├── RECEIVERS.geojson
 │   └── manifest.json
-├── 08_noisemodelling/
+├── 08_noisemodelling_baseline/
 │   ├── workspace/
 │   ├── import_*.log
 │   ├── calculate.log
 │   ├── export.log
 │   ├── RECEIVERS_LEVEL.geojson
+│   ├── RECEIVERS_DEN_WGS84.geojson
 │   └── summary.json
-└── 09_ai_explain/
+├── 09_noisemodelling_live/             # optional
+│   ├── workspace/
+│   ├── RECEIVERS_LEVEL.geojson
+│   └── RECEIVERS_<D|E|N>_WGS84.geojson
+└── 10_ai_explain/
     ├── raw_response.json
     └── explanation.json
 ```
@@ -339,7 +348,7 @@ Gemini receives the raw TfL image and must return a Pydantic schema:
 
 It is explicitly instructed **not** to invent vehicles/hour or dB.
 
-If confidence passes `AI_MIN_CONFIDENCE`, deterministic code translates semantic state into a live scenario multiplier. The exact multipliers are in `traffic.py` and recorded in the run manifest/debug output. This makes the AI influence visible and auditable.
+If confidence passes `AI_MIN_CONFIDENCE`, deterministic code translates semantic state into a live scenario multiplier for the **current London D/E/N period only**. The baseline DEN road table never receives a camera adjustment. The exact multipliers are in `traffic.py` and recorded in the run manifest/debug output.
 
 The second Gemini call explains the finished simulation using only the dumped pipeline facts.
 
@@ -348,10 +357,11 @@ The second Gemini call explains the finished simulation using only the dumped pi
 The Road Traffic Statistics API has filters but no true radius/bounding-box query. The implementation therefore:
 
 1. resolves the `London` region ID,
-2. pages through AADF for `DFT_YEAR`,
+2. pages through `DFT_YEAR` back to `DFT_YEAR - DFT_YEAR_LOOKBACK`,
 3. computes distance locally,
-4. retains the nearest `DFT_MAX_POINTS` within `DFT_NEARBY_RADIUS_M`,
-5. matches those points to OSM road geometry within `DFT_ROAD_MATCH_RADIUS_M`.
+4. keeps one best row per count point (preferring `Counted`, then newer years),
+5. retains the nearest `DFT_MAX_POINTS` within `DFT_NEARBY_RADIUS_M`,
+6. matches those points to OSM road geometry within `DFT_ROAD_MATCH_RADIUS_M`.
 
 This is intentionally direct and easy to inspect. It can be cached later if needed.
 
@@ -408,25 +418,32 @@ http://localhost:8080/
 
 The page is a no-build MapLibre app served directly by FastAPI. It uses the OpenFreeMap Liberty street basemap and therefore needs no extra browser map API key.
 
-A successful `POST /simulate` now additionally creates:
+A successful `POST /simulate` creates two isolated acoustic scenarios when a usable JamCam observation exists:
 
 ```text
 runs/<run-id>/
 ├── 07_prepare/
-│   └── ROADS_WGS84.geojson
-└── 08_noisemodelling/
-    ├── RECEIVERS_LEVEL.geojson          # untouched raw NoiseModelling export, EPSG:27700
-    └── RECEIVERS_DEN_WGS84.geojson      # browser-ready selected period, EPSG:4326
+│   ├── ROADS_BASELINE.geojson
+│   ├── ROADS_BASELINE_WGS84.geojson
+│   ├── ROADS_LIVE.geojson                 # only when Gemini observation is usable
+│   └── ROADS_LIVE_WGS84.geojson
+├── 08_noisemodelling_baseline/
+│   ├── RECEIVERS_LEVEL.geojson             # untouched raw NoiseModelling export
+│   ├── RECEIVERS_DEN_WGS84.geojson         # default baseline heatmap
+│   └── RECEIVERS_<D|E|N>_WGS84.geojson     # same-period baseline used for live delta
+└── 09_noisemodelling_live/
+    ├── RECEIVERS_LEVEL.geojson
+    └── RECEIVERS_<D|E|N>_WGS84.geojson     # current London period live heatmap
 ```
 
-`RECEIVERS_LEVEL` contains several periods per physical receiver. The post-processor selects `NOISE_MAP_PERIOD=DEN` by default before calculating UI statistics, so `receiver_count`, percentiles and map points are no longer inflated by mixing D/E/N/DEN rows.
+The baseline map is always produced from DfT/OSM traffic without a camera multiplier and defaults to `DEN`. The live map is a separate NoiseModelling run; Gemini only influences the current London `D`, `E`, or `N` traffic period. This prevents a single camera still from changing the strategic-style DEN baseline.
 
-The browser map renders three independently toggleable layers:
+The browser keeps the noise heatmap and adds a scenario switch:
 
-- street/building basemap from OpenFreeMap;
-- semi-transparent heatmap weighted by the selected period's receiver level;
-- actual NoiseModelling receiver points, clickable for the raw dB value;
-- modelled road sources, coloured by traffic provenance (`dft`, `dft+jamcam_ai`, or `observed_run_average`).
+- **Baseline DEN** — default heatmap;
+- **Live D/E/N** — available only when the JamCam + Gemini observation passes confidence checks;
+- receiver dots and road provenance switch with the selected scenario;
+- numerical no-contribution values are preserved in raw artifacts but hidden from the heatmap and excluded from summary statistics.
 
 Useful HTTP endpoints:
 
@@ -435,8 +452,12 @@ GET  /
 POST /simulate
 GET  /runs
 GET  /runs/<run-id>/result.json
-GET  /runs/<run-id>/noise.geojson
-GET  /runs/<run-id>/roads.geojson
+GET  /runs/<run-id>/noise/baseline.geojson
+GET  /runs/<run-id>/noise/live.geojson
+GET  /runs/<run-id>/roads/baseline.geojson
+GET  /runs/<run-id>/roads/live.geojson
 ```
 
-The map uses `NOISE_DISPLAY_MIN_DB` / `NOISE_DISPLAY_MAX_DB` only to normalize heatmap intensity. The original acoustic value is preserved as `NOISE_DB` and the raw NoiseModelling file is never rewritten.
+`/runs/<run-id>/noise.geojson` and `/roads.geojson` remain compatibility aliases for the baseline.
+
+The map uses `NOISE_DISPLAY_MIN_DB` / `NOISE_DISPLAY_MAX_DB` only for visualization. Raw acoustic values stay in `NOISE_DB`; values below `NOISE_STATS_FLOOR_DB` are marked as having no meaningful modelled road contribution rather than being presented as physical silence.
