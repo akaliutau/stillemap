@@ -164,8 +164,8 @@ function updatePipeline(event) {
   const detail = row.querySelector(".pipeline-detail");
   if (detail) detail.textContent = progressDetail(event);
 
-  if (event.stage === "tfl" && event.status === "complete" && event.frame_available && event.run_id) {
-    showCameraFrame(event.run_id, event.camera || null);
+  if (event.stage === "tfl" && event.status === "complete" && event.frame_available) {
+    showCameraFrame(event.run_id, event.camera || null, event.frame_data_url || null);
   }
 }
 
@@ -174,15 +174,18 @@ function hideCameraFrame() {
   setVisible("camera-preview", false);
 }
 
-function showCameraFrame(runId, camera = null) {
-  if (!runId) return;
+function showCameraFrame(runId, camera = null, frameDataUrl = null) {
+  if (!runId && !frameDataUrl) return;
   $("camera-name").textContent = camera?.common_name || "TfL camera";
   $("camera-foot").textContent = camera?.view
     ? `${camera.view} · frame used for Gemini analysis`
     : "Frame used for Gemini traffic analysis";
-  $("camera-frame").src = `/runs/${encodeURIComponent(runId)}/camera/frame?t=${Date.now()}`;
-  $("camera-frame").onload = () => setVisible("camera-preview", true);
-  $("camera-frame").onerror = () => setVisible("camera-preview", false);
+
+  const frame = $("camera-frame");
+  frame.onload = () => setVisible("camera-preview", true);
+  frame.onerror = () => setVisible("camera-preview", false);
+  frame.src = frameDataUrl
+    || `/runs/${encodeURIComponent(runId)}/camera/frame?t=${Date.now()}`;
 }
 
 function setSourceData(name, data) {
@@ -406,7 +409,15 @@ function renderResult(result) {
   lastResult = result;
   activeRunId = result.run_id || activeRunId;
   const baseline = result.noise?.baseline;
-  if (result.links?.camera_frame && result.run_id) {
+  // In Cloud Run, run artifacts live on instance-local /tmp. If the frame already
+  // arrived through the progress stream, keep it instead of issuing a second request
+  // that may be routed to another instance.
+  const currentFrameSrc = $("camera-frame").getAttribute("src") || "";
+  if (
+    result.links?.camera_frame
+    && result.run_id
+    && !currentFrameSrc.startsWith("data:image/")
+  ) {
     showCameraFrame(result.run_id, result.jamcam || null);
   }
   $("run-id").textContent = result.run_id ? `run: ${result.run_id}` : "";

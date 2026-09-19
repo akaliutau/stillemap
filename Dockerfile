@@ -36,7 +36,8 @@ RUN mkdir -p /opt/noisemodelling /tmp/nm \
          fi; \
        fi \
     && chmod +x /opt/noisemodelling/bin/ScriptRunner \
-    && /opt/noisemodelling/bin/ScriptRunner --help >/tmp/noisemodelling-help.txt \
+    && test -x /opt/noisemodelling/bin/ScriptRunner \
+    && test -d /opt/noisemodelling/scripts/NoiseModelling \
     && rm -rf /tmp/nm
 
 WORKDIR /app

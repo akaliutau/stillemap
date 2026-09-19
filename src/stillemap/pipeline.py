@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Callable
@@ -251,11 +252,17 @@ class Pipeline:
                 emit_progress("tfl", "failed", error=repr(exc))
         result["jamcam"] = camera.model_dump() if camera else None
         if not flags.skip_tfl and camera is not None:
+            frame_data_url = (
+                f"data:{frame_mime};base64,{base64.b64encode(frame_bytes).decode('ascii')}"
+                if frame_bytes
+                else None
+            )
             emit_progress(
                 "tfl",
                 "complete",
                 camera=camera.model_dump(),
                 frame_available=bool(frame_bytes),
+                frame_data_url=frame_data_url,
             )
         elif not flags.skip_tfl and camera is None:
             emit_progress("tfl", "complete", frame_available=False)

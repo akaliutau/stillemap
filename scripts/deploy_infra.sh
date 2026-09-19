@@ -49,10 +49,10 @@ sleep 5
 
 # Gemini through Vertex AI uses Cloud Run service identity / ADC.
 # Inherit the managed account settings for XXX@gcplab.me
-# gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-#   --member="serviceAccount:${SA}" \
-#   --role="roles/aiplatform.user" \
-#   --condition=None >/dev/null
+#gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+#  --member="serviceAccount:${SA}" \
+#  --role="roles/aiplatform.user" \
+#  --condition=None >/dev/null
 
 # Cloud Build's default service account changed for newer projects. Ask GCP which
 # identity is actually used, then grant that identity permission to push images.
