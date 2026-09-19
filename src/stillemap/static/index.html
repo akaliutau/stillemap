@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>StilleMap — London live-informed noise map</title>
+  <link rel="preconnect" href="https://tiles.openfreemap.org" />
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">S</div>
+        <div>
+          <h1>StilleMap</h1>
+          <p>AI-assisted urban acoustic screening</p>
+        </div>
+      </div>
+
+      <form id="simulate-form" class="panel">
+        <label for="address">London address</label>
+        <div class="address-row">
+          <input id="address" name="address" value="10 Downing Street, London" autocomplete="street-address" />
+          <button id="run-btn" type="submit">Simulate</button>
+        </div>
+        <div class="toggles">
+          <label><input id="skip-weather" type="checkbox" /> Skip weather</label>
+          <label><input id="skip-tfl" type="checkbox" /> Skip TfL camera</label>
+          <label><input id="skip-ai" type="checkbox" /> Skip Gemini</label>
+        </div>
+      </form>
+
+      <section class="status panel">
+        <div class="status-row">
+          <span id="status-dot" class="status-dot idle"></span>
+          <strong id="status-text">Ready</strong>
+        </div>
+        <div id="run-id" class="muted small"></div>
+      </section>
+
+      <section id="metrics" class="metrics hidden">
+        <article class="metric primary">
+          <span>At selected location</span>
+          <strong id="metric-center">—</strong>
+          <small id="metric-center-distance"></small>
+        </article>
+        <article class="metric">
+          <span>Peak</span>
+          <strong id="metric-max">—</strong>
+        </article>
+        <article class="metric">
+          <span>95th percentile</span>
+          <strong id="metric-p95">—</strong>
+        </article>
+        <article class="metric">
+          <span>Receivers</span>
+          <strong id="metric-receivers">—</strong>
+        </article>
+      </section>
+
+      <section id="provenance" class="panel hidden">
+        <h2>Model inputs</h2>
+        <div id="badges" class="badges"></div>
+        <dl id="model-facts" class="facts"></dl>
+      </section>
+
+      <section id="explanation-panel" class="panel hidden">
+        <h2 id="explanation-headline">What this means</h2>
+        <p id="explanation"></p>
+        <p id="caveat" class="caveat"></p>
+      </section>
+
+      <section id="errors-panel" class="panel errors hidden">
+        <h2>Debug</h2>
+        <pre id="errors"></pre>
+      </section>
+    </aside>
+
+    <section class="map-wrap">
+      <div id="map"></div>
+      <div class="map-controls">
+        <label><input id="heat-toggle" type="checkbox" checked /> Heatmap</label>
+        <label><input id="points-toggle" type="checkbox" checked /> Receivers</label>
+        <label><input id="roads-toggle" type="checkbox" checked /> Modelled roads</label>
+      </div>
+      <div class="legend">
+        <div class="legend-title"><span id="legend-period">DEN</span> noise level</div>
+        <div class="legend-bar"></div>
+        <div class="legend-labels"><span>35 dB</span><span>55</span><span>65</span><span>75</span><span>80+ dB</span></div>
+        <div class="legend-note">Display floor only; raw values remain in artifacts.</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

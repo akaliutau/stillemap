@@ -1,0 +1,6 @@
+services:
+  noisemodelling-check:
+    build:
+      context: ./docker/noisemodelling
+    image: stillemap/noisemodelling:6.0.0
+    command: ["/opt/noisemodelling/bin/ScriptRunner", "--help"]

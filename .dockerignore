@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+runs
+*.zip
+.DS_Store
+.idea/
+cache
+tests
+notes.txt
+aggregated_dump.txt

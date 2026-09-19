@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+runs/
+.DS_Store
+notes.txt
+aggregated_dump.txt
+.idea/
+cache
